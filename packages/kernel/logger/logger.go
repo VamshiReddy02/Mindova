@@ -53,13 +53,13 @@ func (l *Logger) Error(msg string, attrs ...any) {
 
 func parseLogLevel(level string) slog.Level {
 	switch level {
-	case "debug":
+	case config.LogDebug:
 		return slog.LevelDebug
-	case "info":
+	case config.LogInfo:
 		return slog.LevelInfo
-	case "warn":
+	case config.LogWarn:
 		return slog.LevelWarn
-	case "error":
+	case config.LogError:
 		return slog.LevelError
 	default:
 		return slog.LevelInfo
@@ -68,5 +68,5 @@ func parseLogLevel(level string) slog.Level {
 }
 
 func isProductionEnv(env string) bool {
-	return env == "production" || env == "staging"
+	return env == config.EnvProduction || env == config.EnvStaging
 }
