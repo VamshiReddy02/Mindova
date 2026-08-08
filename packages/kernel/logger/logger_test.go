@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vamshireddy02/mondova/packages/kernel/config"
+	"github.com/vamshireddy02/mindova/packages/kernel/config"
 )
 
 // TestLoggerCreation tests that a logger can be created successfully.
