@@ -2,22 +2,17 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/vamshireddy02/mindova/packages/kernel/config"
+	"github.com/vamshireddy02/mindova/packages/kernel/health"
 	httpkernel "github.com/vamshireddy02/mindova/packages/kernel/http"
 	"github.com/vamshireddy02/mindova/packages/kernel/logger"
 	"github.com/vamshireddy02/mindova/packages/kernel/middleware"
 )
-
-// HealthResponse represents the /health endpoint response
-type HealthResponse struct {
-	Status string `json:"status"`
-}
 
 func main() {
 	// 1. Load configuration from environment
@@ -36,7 +31,8 @@ func main() {
 	mux := http.NewServeMux()
 
 	// 4. Add endpoints
-	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/health", health.HealthHandler)
+	mux.HandleFunc("/ready", health.ReadyHandler)
 	mux.HandleFunc("/panic", panicHandler)
 
 	// 5. Build middleware chain (innermost to outermost)
@@ -80,28 +76,6 @@ func main() {
 	}
 
 	log.Info("service stopped")
-}
-
-// healthHandler handles GET /health requests
-func healthHandler(w http.ResponseWriter, r *http.Request) {
-	// Only allow GET
-	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Demonstrate retrieving request ID from context
-	// (set by middleware.RequestID middleware)
-	requestID := middleware.GetRequestID(r.Context())
-	_ = requestID // Used only for demonstration; in production would include in response
-
-	response := HealthResponse{
-		Status: "ok",
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
 }
 
 // panicHandler intentionally panics to test recovery middleware
