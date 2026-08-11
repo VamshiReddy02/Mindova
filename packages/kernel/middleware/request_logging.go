@@ -4,16 +4,14 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/vamshireddy02/mondova/packages/kernel/logger"
+	"github.com/vamshireddy02/mindova/packages/kernel/logger"
 )
-
 
 type statusResponseWriter struct {
 	http.ResponseWriter
 	statusCode int
 	written    bool
 }
-
 
 func (w *statusResponseWriter) WriteHeader(statusCode int) {
 	if !w.written {
@@ -23,7 +21,6 @@ func (w *statusResponseWriter) WriteHeader(statusCode int) {
 	}
 }
 
-
 func (w *statusResponseWriter) Write(b []byte) (int, error) {
 	if !w.written {
 		w.statusCode = http.StatusOK
@@ -31,7 +28,6 @@ func (w *statusResponseWriter) Write(b []byte) (int, error) {
 	}
 	return w.ResponseWriter.Write(b)
 }
-
 
 func RequestLogging(log *logger.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {

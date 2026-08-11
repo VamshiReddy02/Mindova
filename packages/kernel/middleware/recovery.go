@@ -18,7 +18,7 @@ func Recovery(log *logger.Logger) func(http.Handler) http.Handler {
 
 func recoverPanic(log *logger.Logger, w http.ResponseWriter, r *http.Request) {
 	err := recover()
-	if err != nil {
+	if err == nil {
 		return
 	}
 
