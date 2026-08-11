@@ -3,7 +3,8 @@ package config
 import "time"
 
 type Config struct {
-	App AppConfig
+	App      AppConfig
+	Database DatabaseConfig
 }
 
 type AppConfig struct {
@@ -16,17 +17,30 @@ type AppConfig struct {
 }
 
 const (
-	EnvDevelopment = "development"
-	EnvStaging     = "staging"
-	EnvProduction  = "production"
+	EnvDevelopment    = "development"
+	EnvStaging        = "staging"
+	EnvProduction     = "production"
+	LogDebug          = "debug"
+	LogInfo           = "info"
+	LogWarn           = "warn"
+	LogError          = "error"
+	SSLModeDisable    = "disable"
+	SSLModeRequire    = "require"
+	SSLModeVerifyCA   = "verify-ca"
+	SSLModeVerifyFull = "verify-full"
 )
 
-const (
-	LogDebug = "debug"
-	LogInfo  = "info"
-	LogWarn  = "warn"
-	LogError = "error"
-)
+type DatabaseConfig struct {
+	Host            string
+	Port            int
+	User            string
+	Password        string
+	Name            string
+	SSLMode         string
+	MaxConns        int32
+	MinConns        int32
+	ConnMaxLifetime time.Duration
+}
 
 var validEnvironments = []string{EnvDevelopment, EnvStaging, EnvProduction}
 
