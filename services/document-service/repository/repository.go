@@ -14,7 +14,7 @@ var ErrNotFound = errors.New("document not found")
 type DocumentRepository interface {
 	Create(ctx context.Context, doc *model.Document) error
 	GetByID(ctx context.Context, id string) (*model.Document, error)
-	List(ctx context.Context) ([]*model.Document, error)
+	List(ctx context.Context, limit int) ([]*model.Document, error)
 	Update(ctx context.Context, doc *model.Document) error
 	Delete(ctx context.Context, id string) error
 }
@@ -72,18 +72,18 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*model.Document, e
 	return doc, nil
 }
 
-func (r *Repository) List(ctx context.Context) ([]*model.Document, error) {
+func (r *Repository) List(ctx context.Context, limit int) ([]*model.Document, error) {
 	const query = `
 		SELECT id, name, content, content_type, created_at, updated_at
 		FROM documents
 		ORDER BY created_at DESC
+		LIMIT $1
 	`
 
-	rows, err := r.db.Query(ctx, query)
+	rows, err := r.db.Query(ctx, query, limit)
 	if err != nil {
 		return nil, err
 	}
-
 	defer rows.Close()
 
 	docs := make([]*model.Document, 0)
@@ -115,7 +115,7 @@ func (r *Repository) Update(ctx context.Context, doc *model.Document) error {
 		UPDATE documents
 		SET name = $1, content = $2, content_type = $3, updated_at = now()
 		WHERE id = $4
-		RETURNING updated_at
+		RETURNING created_at, updated_at
 	`
 
 	err := r.db.QueryRow(ctx, query,
@@ -123,7 +123,7 @@ func (r *Repository) Update(ctx context.Context, doc *model.Document) error {
 		doc.Content,
 		doc.ContentType,
 		doc.ID,
-	).Scan(&doc.UpdatedAt)
+	).Scan(&doc.CreatedAt, &doc.UpdatedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
@@ -132,16 +132,14 @@ func (r *Repository) Update(ctx context.Context, doc *model.Document) error {
 }
 
 func (r *Repository) Delete(ctx context.Context, id string) error {
-	const query = `DELETE FROM documents where id = $1`
+	const query = `DELETE FROM documents WHERE id = $1`
 
 	tag, err := r.db.Exec(ctx, query, id)
 	if err != nil {
 		return err
 	}
-
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-
 	return nil
 }

@@ -25,8 +25,8 @@ func (s *Service) GetByID(ctx context.Context, id string) (*model.Document, erro
 	return s.repo.GetByID(ctx, id)
 }
 
-func (s *Service) List(ctx context.Context) ([]*model.Document, error) {
-	return s.repo.List(ctx)
+func (s *Service) List(ctx context.Context, limit int) ([]*model.Document, error) {
+	return s.repo.List(ctx, limit)
 }
 
 func (s *Service) Update(ctx context.Context, doc *model.Document) error {

@@ -15,7 +15,7 @@ import (
 type stubService struct {
 	createFn  func(ctx context.Context, doc *model.Document) error
 	getByIDFn func(ctx context.Context, id string) (*model.Document, error)
-	listFn    func(ctx context.Context) ([]*model.Document, error)
+	listFn    func(ctx context.Context, limit int) ([]*model.Document, error)
 	updateFn  func(ctx context.Context, doc *model.Document) error
 	deleteFn  func(ctx context.Context, id string) error
 }
@@ -36,11 +36,11 @@ func (s *stubService) GetByID(ctx context.Context, id string) (*model.Document, 
 	return s.getByIDFn(ctx, id)
 }
 
-func (s *stubService) List(ctx context.Context) ([]*model.Document, error) {
+func (s *stubService) List(ctx context.Context, limit int) ([]*model.Document, error) {
 	if s.listFn == nil {
 		return nil, errUnimplemented
 	}
-	return s.listFn(ctx)
+	return s.listFn(ctx, limit)
 }
 
 func (s *stubService) Update(ctx context.Context, doc *model.Document) error {

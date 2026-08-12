@@ -134,7 +134,7 @@ func TestList(t *testing.T) {
 	}
 	defer pool.Exec(ctx, "DELETE FROM documents WHERE id = $1", doc2.ID)
 
-	docs, err := repo.List(ctx)
+	docs, err := repo.List(ctx, 20)
 	if err != nil {
 		t.Fatalf("List() returned error: %v", err)
 	}
@@ -193,6 +193,56 @@ func TestUpdate(t *testing.T) {
 	}
 	if fetched.Content != "updated content" {
 		t.Errorf("expected updated content, got %s", fetched.Content)
+	}
+}
+
+// TestUpdate_PreservesCreatedAt mirrors the handler's pattern of building a
+// fresh model.Document (only ID, Name, Content, ContentType set — CreatedAt
+// left as zero value) and passing it to Update(). This is a regression test
+// for a bug where Update()'s query only returned updated_at, so CreatedAt
+// on the returned doc stayed at Go's zero time instead of the real value.
+func TestUpdate_PreservesCreatedAt(t *testing.T) {
+	pool, cleanup := testPool(t)
+	defer cleanup()
+
+	repo := New(pool)
+	ctx := context.Background()
+
+	// Create a document and remember its real CreatedAt
+	created := &model.Document{
+		Name:        "preserve-created-at.md",
+		Content:     "original",
+		ContentType: "text/markdown",
+	}
+	if err := repo.Create(ctx, created); err != nil {
+		t.Fatalf("Create() failed: %v", err)
+	}
+	defer pool.Exec(ctx, "DELETE FROM documents WHERE id = $1", created.ID)
+
+	originalCreatedAt := created.CreatedAt
+
+	// Build a FRESH Document, as the HTTP handler does — CreatedAt
+	// deliberately left unset here to reproduce the bug shape.
+	updateDoc := &model.Document{
+		ID:          created.ID,
+		Name:        "renamed.md",
+		Content:     "updated content",
+		ContentType: "text/markdown",
+	}
+
+	if err := repo.Update(ctx, updateDoc); err != nil {
+		t.Fatalf("Update() returned error: %v", err)
+	}
+
+	if updateDoc.CreatedAt.IsZero() {
+		t.Fatal("CreatedAt is zero after Update() — regression: created_at was lost")
+	}
+
+	// Allow for sub-second rounding differences between what Postgres
+	// stored and what we read back originally; they should represent
+	// the same instant.
+	if !updateDoc.CreatedAt.Equal(originalCreatedAt) {
+		t.Errorf("expected CreatedAt to match original %v, got %v", originalCreatedAt, updateDoc.CreatedAt)
 	}
 }
 
