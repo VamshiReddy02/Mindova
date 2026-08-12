@@ -2,7 +2,7 @@ package handler
 
 import "net/http"
 
-func (h *Handler) List(w http.ResponseWriter, r http.Request) {
+func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
