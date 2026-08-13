@@ -2,11 +2,15 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strings"
 
 	"github.com/vamshireddy02/mindova/services/document-service/service"
 )
+
+const maxJSONBodySize = 1 << 20
 
 type Handler struct {
 	svc service.DocumentService
@@ -34,4 +38,31 @@ func extractID(r *http.Request, prefix string) string {
 	id := strings.TrimPrefix(r.URL.Path, prefix)
 	id = strings.Trim(id, "/")
 	return id
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodySize)
+	defer r.Body.Close()
+
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(dst); err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body is too large")
+			return false
+		}
+
+		writeError(w, http.StatusBadRequest, "malformed JSON body")
+		return false
+	}
+
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "request body must contain a single JSON object")
+		return false
+	}
+
+	return true
 }

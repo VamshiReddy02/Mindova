@@ -169,3 +169,63 @@ func TestUpdate_WrongMethod(t *testing.T) {
 		t.Fatalf("expected status 405, got %d", rec.Code)
 	}
 }
+
+func TestUpdate_UnknownField(t *testing.T) {
+	svc := &stubService{
+		updateFn: func(ctx context.Context, doc *model.Document) error {
+			t.Fatal("service should not be called for unknown fields")
+			return nil
+		},
+	}
+
+	h := New(svc)
+
+	body := `{
+		"name": "test.md",
+		"content": "hello",
+		"content_type": "text/plain",
+		"unknown": "should fail"
+	}`
+
+	req := httptest.NewRequest(
+		http.MethodPut,
+		"/documents/doc-123",
+		strings.NewReader(body),
+	)
+
+	rec := httptest.NewRecorder()
+
+	h.Update(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", rec.Code)
+	}
+}
+
+func TestUpdate_MultipleJSONObjects(t *testing.T) {
+	svc := &stubService{
+		updateFn: func(ctx context.Context, doc *model.Document) error {
+			t.Fatal("service should not be called")
+			return nil
+		},
+	}
+
+	h := New(svc)
+
+	body := `{"name":"a","content":"x","content_type":"text/plain"}
+{"name":"b","content":"y","content_type":"text/plain"}`
+
+	req := httptest.NewRequest(
+		http.MethodPut,
+		"/documents/doc-123",
+		strings.NewReader(body),
+	)
+
+	rec := httptest.NewRecorder()
+
+	h.Update(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", rec.Code)
+	}
+}
