@@ -2,13 +2,16 @@ package repository
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pgvector/pgvector-go"
 
 	"github.com/vamshireddy02/mindova/services/document-service/model"
 )
 
-// ChunkRepository defines the persistence operations for document chunks.
+const embeddingDimensions = 8
+
 type ChunkRepository interface {
 	CreateBatch(ctx context.Context, chunks []*model.DocumentChunk) error
 	GetByDocumentID(ctx context.Context, documentID string) ([]*model.DocumentChunk, error)
@@ -24,18 +27,18 @@ func NewChunkRepo(db *pgxpool.Pool) *ChunkRepo {
 	return &ChunkRepo{db: db}
 }
 
-// CreateBatch inserts all chunks in a single transaction: either every
-// chunk is persisted, or none are. This matters for the worker's use
-// case — a document's chunks should never end up partially stored if
-// something fails midway through the batch.
-//
-// PostgreSQL generates each chunk's ID and created_at; CreateBatch
-// populates them back onto the corresponding chunk.
-//
-// Calling CreateBatch with an empty slice is a no-op.
 func (r *ChunkRepo) CreateBatch(ctx context.Context, chunks []*model.DocumentChunk) error {
 	if len(chunks) == 0 {
 		return nil
+	}
+
+	for i, c := range chunks {
+		if len(c.Embedding) != embeddingDimensions {
+			return fmt.Errorf(
+				"chunk %d: embedding has %d dimensions, expected %d",
+				i, len(c.Embedding), embeddingDimensions,
+			)
+		}
 	}
 
 	tx, err := r.db.Begin(ctx)
@@ -45,13 +48,14 @@ func (r *ChunkRepo) CreateBatch(ctx context.Context, chunks []*model.DocumentChu
 	defer tx.Rollback(ctx) // no-op once Commit succeeds
 
 	const query = `
-		INSERT INTO document_chunks (id, document_id, chunk_index, content)
-		VALUES (gen_random_uuid(), $1, $2, $3)
+		INSERT INTO document_chunks (id, document_id, chunk_index, content, embedding)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4)
 		RETURNING id, created_at
 	`
 
 	for _, c := range chunks {
-		if err := tx.QueryRow(ctx, query, c.DocumentID, c.ChunkIndex, c.Content).Scan(&c.ID, &c.CreatedAt); err != nil {
+		vec := pgvector.NewVector(c.Embedding)
+		if err := tx.QueryRow(ctx, query, c.DocumentID, c.ChunkIndex, c.Content, vec).Scan(&c.ID, &c.CreatedAt); err != nil {
 			return err
 		}
 	}
@@ -59,11 +63,9 @@ func (r *ChunkRepo) CreateBatch(ctx context.Context, chunks []*model.DocumentChu
 	return tx.Commit(ctx)
 }
 
-// GetByDocumentID fetches all chunks for a document, ordered by their
-// original position (chunk_index ascending).
 func (r *ChunkRepo) GetByDocumentID(ctx context.Context, documentID string) ([]*model.DocumentChunk, error) {
 	const query = `
-		SELECT id, document_id, chunk_index, content, created_at
+		SELECT id, document_id, chunk_index, content, embedding, created_at
 		FROM document_chunks
 		WHERE document_id = $1
 		ORDER BY chunk_index ASC
@@ -79,15 +81,20 @@ func (r *ChunkRepo) GetByDocumentID(ctx context.Context, documentID string) ([]*
 
 	for rows.Next() {
 		c := &model.DocumentChunk{}
+		var vec pgvector.Vector
+
 		if err := rows.Scan(
 			&c.ID,
 			&c.DocumentID,
 			&c.ChunkIndex,
 			&c.Content,
+			&vec,
 			&c.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
+
+		c.Embedding = vec.Slice()
 		chunks = append(chunks, c)
 	}
 
@@ -98,5 +105,4 @@ func (r *ChunkRepo) GetByDocumentID(ctx context.Context, documentID string) ([]*
 	return chunks, nil
 }
 
-// Compile-time check that *ChunkRepo satisfies ChunkRepository.
 var _ ChunkRepository = (*ChunkRepo)(nil)

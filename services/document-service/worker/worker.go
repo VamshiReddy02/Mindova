@@ -2,7 +2,9 @@ package worker
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/vamshireddy02/mindova/services/document-service/embedding"
 	"github.com/vamshireddy02/mindova/services/document-service/model"
 )
 
@@ -25,13 +27,19 @@ type Worker struct {
 	ingestions IngestionService
 	documents  DocumentGetter
 	processor  DocumentProcessor
+	embedder   embedding.Embedder
 	chunks     ChunkStore
 	batchSize  int
 }
 
-// New creates a Worker. batchSize controls how many pending ingestions
-// Run processes per call; pass 0 to use the default (10).
-func New(ingestions IngestionService, documents DocumentGetter, processor DocumentProcessor, chunks ChunkStore, batchSize int) *Worker {
+func New(
+	ingestions IngestionService,
+	documents DocumentGetter,
+	processor DocumentProcessor,
+	embedder embedding.Embedder,
+	chunks ChunkStore,
+	batchSize int,
+) *Worker {
 	if batchSize <= 0 {
 		batchSize = defaultBatchSize
 	}
@@ -40,6 +48,7 @@ func New(ingestions IngestionService, documents DocumentGetter, processor Docume
 		ingestions: ingestions,
 		documents:  documents,
 		processor:  processor,
+		embedder:   embedder,
 		chunks:     chunks,
 		batchSize:  batchSize,
 	}
@@ -80,12 +89,26 @@ func (w *Worker) processOne(ctx context.Context, ing *model.Ingestion) {
 		return
 	}
 
+	embeddings, err := w.embedder.Embed(ctx, chunkTexts)
+	if err != nil {
+		w.fail(ctx, ing.ID, "failed to generate embeddings: "+err.Error())
+		return
+	}
+	if len(embeddings) != len(chunkTexts) {
+		w.fail(ctx, ing.ID, fmt.Sprintf(
+			"embedding count mismatch: expected %d, got %d",
+			len(chunkTexts), len(embeddings),
+		))
+		return
+	}
+
 	chunks := make([]*model.DocumentChunk, len(chunkTexts))
 	for i, text := range chunkTexts {
 		chunks[i] = &model.DocumentChunk{
 			DocumentID: doc.ID,
 			ChunkIndex: i,
 			Content:    text,
+			Embedding:  embeddings[i],
 		}
 	}
 

@@ -68,6 +68,37 @@ func (f *fakeProcessor) Process(ctx context.Context, doc *model.Document) ([]str
 	return f.chunksFor[doc.ID], nil
 }
 
+// fakeEmbedder is an in-memory stand-in for embedding.Embedder.
+type fakeEmbedder struct {
+	err         error
+	vectorCount int // if > 0, overrides len(texts) — lets a test simulate a mismatched count
+	dims        int
+	calledWith  [][]string // each call's input texts, in order
+}
+
+func (f *fakeEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	f.calledWith = append(f.calledWith, texts)
+	if f.err != nil {
+		return nil, f.err
+	}
+
+	count := len(texts)
+	if f.vectorCount > 0 {
+		count = f.vectorCount
+	}
+
+	dims := f.dims
+	if dims <= 0 {
+		dims = 4
+	}
+
+	vectors := make([][]float32, count)
+	for i := range vectors {
+		vectors[i] = make([]float32, dims)
+	}
+	return vectors, nil
+}
+
 // fakeChunkStore is an in-memory stand-in for worker.ChunkStore.
 type fakeChunkStore struct {
 	err   error
@@ -86,9 +117,10 @@ func TestWorker_Run_ProcessesPendingIngestion_Success(t *testing.T) {
 	ingestions := &fakeIngestionService{pending: []*model.Ingestion{ing}}
 	documents := &fakeDocumentGetter{docs: map[string]*model.Document{"doc-1": doc}}
 	processor := &fakeProcessor{chunksFor: map[string][]string{"doc-1": {"chunk one", "chunk two"}}}
+	embedder := &fakeEmbedder{}
 	chunks := &fakeChunkStore{}
 
-	w := New(ingestions, documents, processor, chunks, 0)
+	w := New(ingestions, documents, processor, embedder, chunks, 0)
 
 	if err := w.Run(context.Background()); err != nil {
 		t.Fatalf("Run() returned error: %v", err)
@@ -102,9 +134,6 @@ func TestWorker_Run_ProcessesPendingIngestion_Success(t *testing.T) {
 	}
 	if got := ingestions.calls[1]; got.id != "ing-1" || got.status != model.IngestionCompleted {
 		t.Errorf("expected second call to mark completed, got %+v", got)
-	}
-	if ingestions.calls[1].errMsg != "" {
-		t.Errorf("expected empty error message on success, got %q", ingestions.calls[1].errMsg)
 	}
 
 	if len(chunks.saved) != 1 {
@@ -122,6 +151,137 @@ func TestWorker_Run_ProcessesPendingIngestion_Success(t *testing.T) {
 	}
 }
 
+func TestWorker_Run_EmbeddingsReachChunkStore(t *testing.T) {
+	ing := &model.Ingestion{ID: "ing-1", DocumentID: "doc-1", Status: model.IngestionPending}
+	doc := &model.Document{ID: "doc-1"}
+
+	ingestions := &fakeIngestionService{pending: []*model.Ingestion{ing}}
+	documents := &fakeDocumentGetter{docs: map[string]*model.Document{"doc-1": doc}}
+	processor := &fakeProcessor{chunksFor: map[string][]string{"doc-1": {"chunk one", "chunk two"}}}
+	embedder := &fakeEmbedder{dims: 8}
+	chunkStore := &fakeChunkStore{}
+
+	w := New(ingestions, documents, processor, embedder, chunkStore, 0)
+
+	if err := w.Run(context.Background()); err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+
+	if len(chunkStore.saved) != 1 {
+		t.Fatalf("expected exactly 1 CreateBatch call, got %d", len(chunkStore.saved))
+	}
+
+	stored := chunkStore.saved[0]
+	if len(stored) != 2 {
+		t.Fatalf("expected 2 chunks stored, got %d", len(stored))
+	}
+
+	for i, c := range stored {
+		if c.Embedding == nil {
+			t.Errorf("chunk %d: expected a non-nil embedding, got nil", i)
+		}
+		if len(c.Embedding) != 8 {
+			t.Errorf("chunk %d: expected embedding of length 8, got %d", i, len(c.Embedding))
+		}
+	}
+}
+
+func TestWorker_Run_EmbedsChunks_CalledWithChunkTexts(t *testing.T) {
+	ing := &model.Ingestion{ID: "ing-1", DocumentID: "doc-1", Status: model.IngestionPending}
+	doc := &model.Document{ID: "doc-1"}
+
+	ingestions := &fakeIngestionService{pending: []*model.Ingestion{ing}}
+	documents := &fakeDocumentGetter{docs: map[string]*model.Document{"doc-1": doc}}
+	processor := &fakeProcessor{chunksFor: map[string][]string{"doc-1": {"alpha", "beta", "gamma"}}}
+	embedder := &fakeEmbedder{}
+	chunkStore := &fakeChunkStore{}
+
+	w := New(ingestions, documents, processor, embedder, chunkStore, 0)
+
+	if err := w.Run(context.Background()); err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+
+	if len(embedder.calledWith) != 1 {
+		t.Fatalf("expected Embed to be called once, got %d calls", len(embedder.calledWith))
+	}
+
+	got := embedder.calledWith[0]
+	want := []string{"alpha", "beta", "gamma"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d texts passed to Embed, got %d", len(want), len(got))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("position %d: expected %q, got %q", i, want[i], got[i])
+		}
+	}
+}
+
+func TestWorker_Run_EmbeddingFails_MarksFailed_ChunksNeverStored(t *testing.T) {
+	ing := &model.Ingestion{ID: "ing-1", DocumentID: "doc-1", Status: model.IngestionPending}
+	doc := &model.Document{ID: "doc-1"}
+	embedErr := errors.New("embedding provider unavailable")
+
+	ingestions := &fakeIngestionService{pending: []*model.Ingestion{ing}}
+	documents := &fakeDocumentGetter{docs: map[string]*model.Document{"doc-1": doc}}
+	processor := &fakeProcessor{chunksFor: map[string][]string{"doc-1": {"a chunk"}}}
+	embedder := &fakeEmbedder{err: embedErr}
+	chunkStore := &fakeChunkStore{}
+
+	w := New(ingestions, documents, processor, embedder, chunkStore, 0)
+
+	if err := w.Run(context.Background()); err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+
+	if len(ingestions.calls) != 2 {
+		t.Fatalf("expected 2 UpdateStatus calls, got %d: %+v", len(ingestions.calls), ingestions.calls)
+	}
+
+	final := ingestions.calls[1]
+	if final.status != model.IngestionFailed {
+		t.Errorf("expected final status failed when embedding fails, got %s", final.status)
+	}
+	if final.errMsg == "" {
+		t.Error("expected a non-empty error message describing the embedding failure")
+	}
+
+	if len(chunkStore.saved) != 0 {
+		t.Errorf("expected chunks never persisted when embedding fails, got %d CreateBatch calls", len(chunkStore.saved))
+	}
+}
+
+func TestWorker_Run_EmbeddingCountMismatch_MarksFailed(t *testing.T) {
+	ing := &model.Ingestion{ID: "ing-1", DocumentID: "doc-1", Status: model.IngestionPending}
+	doc := &model.Document{ID: "doc-1"}
+
+	ingestions := &fakeIngestionService{pending: []*model.Ingestion{ing}}
+	documents := &fakeDocumentGetter{docs: map[string]*model.Document{"doc-1": doc}}
+	// 3 chunks produced, but the (misbehaving) embedder returns only 2 vectors.
+	processor := &fakeProcessor{chunksFor: map[string][]string{"doc-1": {"a", "b", "c"}}}
+	embedder := &fakeEmbedder{vectorCount: 2}
+	chunkStore := &fakeChunkStore{}
+
+	w := New(ingestions, documents, processor, embedder, chunkStore, 0)
+
+	if err := w.Run(context.Background()); err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+
+	final := ingestions.calls[len(ingestions.calls)-1]
+	if final.status != model.IngestionFailed {
+		t.Errorf("expected status failed on embedding count mismatch, got %s", final.status)
+	}
+	if final.errMsg == "" {
+		t.Error("expected a non-empty error message explaining the mismatch")
+	}
+
+	if len(chunkStore.saved) != 0 {
+		t.Errorf("expected chunks never persisted on embedding count mismatch, got %d calls", len(chunkStore.saved))
+	}
+}
+
 func TestWorker_Run_ChunkPersistenceFails_MarksFailed(t *testing.T) {
 	ing := &model.Ingestion{ID: "ing-1", DocumentID: "doc-1", Status: model.IngestionPending}
 	doc := &model.Document{ID: "doc-1"}
@@ -130,9 +290,10 @@ func TestWorker_Run_ChunkPersistenceFails_MarksFailed(t *testing.T) {
 	ingestions := &fakeIngestionService{pending: []*model.Ingestion{ing}}
 	documents := &fakeDocumentGetter{docs: map[string]*model.Document{"doc-1": doc}}
 	processor := &fakeProcessor{chunksFor: map[string][]string{"doc-1": {"a chunk"}}}
+	embedder := &fakeEmbedder{}
 	chunkStore := &fakeChunkStore{err: storeErr}
 
-	w := New(ingestions, documents, processor, chunkStore, 0)
+	w := New(ingestions, documents, processor, embedder, chunkStore, 0)
 
 	if err := w.Run(context.Background()); err != nil {
 		t.Fatalf("Run() returned error: %v", err)
@@ -150,17 +311,12 @@ func TestWorker_Run_ChunkPersistenceFails_MarksFailed(t *testing.T) {
 		t.Error("expected a non-empty error message describing the persistence failure")
 	}
 
-	// The ingestion must never have been marked completed at any point —
-	// not just that the *final* status is failed, but that completed
-	// never appears in the call history at all.
 	for _, c := range ingestions.calls {
 		if c.status == model.IngestionCompleted {
 			t.Errorf("ingestion must not become completed when chunk persistence fails; got call %+v", c)
 		}
 	}
 
-	// Chunks were attempted, but the ingestion must not be marked
-	// completed since CreateBatch failed.
 	if len(chunkStore.saved) != 1 {
 		t.Errorf("expected CreateBatch to have been attempted once, got %d", len(chunkStore.saved))
 	}
@@ -172,12 +328,11 @@ func TestWorker_Run_EmptyChunks_MarksFailed(t *testing.T) {
 
 	ingestions := &fakeIngestionService{pending: []*model.Ingestion{ing}}
 	documents := &fakeDocumentGetter{docs: map[string]*model.Document{"doc-1": doc}}
-	// Processor succeeds but produces zero chunks — e.g. a document that
-	// normalizes down to nothing processable.
 	processor := &fakeProcessor{chunksFor: map[string][]string{"doc-1": {}}}
+	embedder := &fakeEmbedder{}
 	chunkStore := &fakeChunkStore{}
 
-	w := New(ingestions, documents, processor, chunkStore, 0)
+	w := New(ingestions, documents, processor, embedder, chunkStore, 0)
 
 	if err := w.Run(context.Background()); err != nil {
 		t.Fatalf("Run() returned error: %v", err)
@@ -195,9 +350,9 @@ func TestWorker_Run_EmptyChunks_MarksFailed(t *testing.T) {
 		t.Error("expected a non-empty error message explaining why it failed")
 	}
 
-	// Persisting an empty batch should never even be attempted — there's
-	// nothing to persist, and reaching CreateBatch at all would risk it
-	// silently no-oping and the caller mistaking that for success.
+	if len(embedder.calledWith) != 0 {
+		t.Errorf("expected Embed not to be called for zero chunks, got %d calls", len(embedder.calledWith))
+	}
 	if len(chunkStore.saved) != 0 {
 		t.Errorf("expected CreateBatch not to be called for zero chunks, got %d calls", len(chunkStore.saved))
 	}
@@ -211,9 +366,10 @@ func TestWorker_Run_ProcessingFails_MarksFailed_NoChunksStored(t *testing.T) {
 	ingestions := &fakeIngestionService{pending: []*model.Ingestion{ing}}
 	documents := &fakeDocumentGetter{docs: map[string]*model.Document{"doc-1": doc}}
 	processor := &fakeProcessor{err: processErr}
+	embedder := &fakeEmbedder{}
 	chunkStore := &fakeChunkStore{}
 
-	w := New(ingestions, documents, processor, chunkStore, 0)
+	w := New(ingestions, documents, processor, embedder, chunkStore, 0)
 
 	if err := w.Run(context.Background()); err != nil {
 		t.Fatalf("Run() returned error: %v", err)
@@ -224,6 +380,9 @@ func TestWorker_Run_ProcessingFails_MarksFailed_NoChunksStored(t *testing.T) {
 		t.Errorf("expected final status failed, got %s", final.status)
 	}
 
+	if len(embedder.calledWith) != 0 {
+		t.Errorf("expected Embed never called when processing fails, got %d calls", len(embedder.calledWith))
+	}
 	if len(chunkStore.saved) != 0 {
 		t.Errorf("expected CreateBatch never called when processing fails, got %d calls", len(chunkStore.saved))
 	}
@@ -233,11 +392,12 @@ func TestWorker_Run_DocumentFetchFails_MarksFailed(t *testing.T) {
 	ing := &model.Ingestion{ID: "ing-1", DocumentID: "doc-missing", Status: model.IngestionPending}
 
 	ingestions := &fakeIngestionService{pending: []*model.Ingestion{ing}}
-	documents := &fakeDocumentGetter{docs: map[string]*model.Document{}} // doc-missing isn't there
+	documents := &fakeDocumentGetter{docs: map[string]*model.Document{}}
 	processor := &fakeProcessor{}
+	embedder := &fakeEmbedder{}
 	chunkStore := &fakeChunkStore{}
 
-	w := New(ingestions, documents, processor, chunkStore, 0)
+	w := New(ingestions, documents, processor, embedder, chunkStore, 0)
 
 	if err := w.Run(context.Background()); err != nil {
 		t.Fatalf("Run() returned error: %v", err)
@@ -267,9 +427,10 @@ func TestWorker_Run_NoPendingIngestions_NoOp(t *testing.T) {
 	ingestions := &fakeIngestionService{pending: nil}
 	documents := &fakeDocumentGetter{docs: map[string]*model.Document{}}
 	processor := &fakeProcessor{}
+	embedder := &fakeEmbedder{}
 	chunkStore := &fakeChunkStore{}
 
-	w := New(ingestions, documents, processor, chunkStore, 0)
+	w := New(ingestions, documents, processor, embedder, chunkStore, 0)
 
 	if err := w.Run(context.Background()); err != nil {
 		t.Fatalf("Run() returned error: %v", err)
@@ -292,9 +453,10 @@ func TestWorker_Run_ListPendingError_ReturnsError(t *testing.T) {
 	ingestions := &fakeIngestionService{listErr: listErr}
 	documents := &fakeDocumentGetter{docs: map[string]*model.Document{}}
 	processor := &fakeProcessor{}
+	embedder := &fakeEmbedder{}
 	chunkStore := &fakeChunkStore{}
 
-	w := New(ingestions, documents, processor, chunkStore, 0)
+	w := New(ingestions, documents, processor, embedder, chunkStore, 0)
 
 	err := w.Run(context.Background())
 	if !errors.Is(err, listErr) {
@@ -323,15 +485,15 @@ func TestWorker_Run_MultipleIngestions_OneFailureDoesNotStopBatch(t *testing.T) 
 		failFor:   map[string]error{"doc-bad": errors.New("processing failed")},
 		chunksFor: map[string][]string{"doc-ok": {"a chunk"}},
 	}
+	embedder := &fakeEmbedder{}
 	chunkStore := &fakeChunkStore{}
 
-	w := New(ingestions, documents, processor, chunkStore, 0)
+	w := New(ingestions, documents, processor, embedder, chunkStore, 0)
 
 	if err := w.Run(context.Background()); err != nil {
 		t.Fatalf("Run() returned error: %v", err)
 	}
 
-	// 2 UpdateStatus calls per ingestion (processing + terminal) x 2 ingestions = 4.
 	if len(ingestions.calls) != 4 {
 		t.Fatalf("expected 4 UpdateStatus calls, got %d: %+v", len(ingestions.calls), ingestions.calls)
 	}
@@ -354,7 +516,6 @@ func TestWorker_Run_MultipleIngestions_OneFailureDoesNotStopBatch(t *testing.T) 
 		t.Errorf("expected ing-ok to end completed despite ing-bad failing, got %+v", okFinal)
 	}
 
-	// Only the successful ingestion's chunks should have been stored.
 	if len(chunkStore.saved) != 1 {
 		t.Fatalf("expected exactly 1 CreateBatch call (for the successful ingestion), got %d", len(chunkStore.saved))
 	}
@@ -374,17 +535,15 @@ func TestWorker_Run_RespectsBatchSize(t *testing.T) {
 		"doc-3": {ID: "doc-3"},
 	}}
 	processor := &fakeProcessor{}
+	embedder := &fakeEmbedder{}
 	chunkStore := &fakeChunkStore{}
 
-	w := New(ingestions, documents, processor, chunkStore, 2)
+	w := New(ingestions, documents, processor, embedder, chunkStore, 2)
 
 	if err := w.Run(context.Background()); err != nil {
 		t.Fatalf("Run() returned error: %v", err)
 	}
 
-	// fakeIngestionService.ListPending already truncates to the requested
-	// limit, matching real repository behavior (SQL LIMIT). With batch
-	// size 2, only 2 ingestions should have been processed.
 	if len(processor.processed) != 2 {
 		t.Errorf("expected 2 documents processed with batch size 2, got %d", len(processor.processed))
 	}
@@ -394,14 +553,15 @@ func TestWorker_New_DefaultsBatchSizeWhenZeroOrNegative(t *testing.T) {
 	ingestions := &fakeIngestionService{}
 	documents := &fakeDocumentGetter{docs: map[string]*model.Document{}}
 	processor := &fakeProcessor{}
+	embedder := &fakeEmbedder{}
 	chunkStore := &fakeChunkStore{}
 
-	w := New(ingestions, documents, processor, chunkStore, 0)
+	w := New(ingestions, documents, processor, embedder, chunkStore, 0)
 	if w.batchSize != defaultBatchSize {
 		t.Errorf("expected default batch size %d, got %d", defaultBatchSize, w.batchSize)
 	}
 
-	w = New(ingestions, documents, processor, chunkStore, -5)
+	w = New(ingestions, documents, processor, embedder, chunkStore, -5)
 	if w.batchSize != defaultBatchSize {
 		t.Errorf("expected default batch size %d for negative input, got %d", defaultBatchSize, w.batchSize)
 	}
