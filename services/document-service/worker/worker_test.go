@@ -18,9 +18,8 @@ type statusCall struct {
 
 // fakeIngestionService is an in-memory stand-in for worker.IngestionService.
 type fakeIngestionService struct {
-	pending   []*model.Ingestion
-	listErr   error
-	updateErr error
+	pending []*model.Ingestion
+	listErr error
 
 	calls []statusCall
 }
@@ -37,19 +36,15 @@ func (f *fakeIngestionService) ListPending(ctx context.Context, limit int) ([]*m
 
 func (f *fakeIngestionService) UpdateStatus(ctx context.Context, id string, status model.IngestionStatus, errMsg string) error {
 	f.calls = append(f.calls, statusCall{id: id, status: status, errMsg: errMsg})
-	return f.updateErr
+	return nil
 }
 
 // fakeDocumentGetter is an in-memory stand-in for worker.DocumentGetter.
 type fakeDocumentGetter struct {
 	docs map[string]*model.Document
-	err  error
 }
 
 func (f *fakeDocumentGetter) GetByID(ctx context.Context, id string) (*model.Document, error) {
-	if f.err != nil {
-		return nil, f.err
-	}
 	doc, ok := f.docs[id]
 	if !ok {
 		return nil, errors.New("document not found")
@@ -57,14 +52,30 @@ func (f *fakeDocumentGetter) GetByID(ctx context.Context, id string) (*model.Doc
 	return doc, nil
 }
 
-// fakeProcessor is an in-memory stand-in for worker.Processor.
+// fakeProcessor is an in-memory stand-in for worker.DocumentProcessor.
 type fakeProcessor struct {
+	chunksFor map[string][]string // document ID -> chunks to return
 	err       error
+
 	processed []string // document IDs passed to Process, in order
 }
 
-func (f *fakeProcessor) Process(ctx context.Context, doc *model.Document) error {
+func (f *fakeProcessor) Process(ctx context.Context, doc *model.Document) ([]string, error) {
 	f.processed = append(f.processed, doc.ID)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.chunksFor[doc.ID], nil
+}
+
+// fakeChunkStore is an in-memory stand-in for worker.ChunkStore.
+type fakeChunkStore struct {
+	err   error
+	saved [][]*model.DocumentChunk // one entry per CreateBatch call
+}
+
+func (f *fakeChunkStore) CreateBatch(ctx context.Context, chunks []*model.DocumentChunk) error {
+	f.saved = append(f.saved, chunks)
 	return f.err
 }
 
@@ -74,9 +85,10 @@ func TestWorker_Run_ProcessesPendingIngestion_Success(t *testing.T) {
 
 	ingestions := &fakeIngestionService{pending: []*model.Ingestion{ing}}
 	documents := &fakeDocumentGetter{docs: map[string]*model.Document{"doc-1": doc}}
-	processor := &fakeProcessor{}
+	processor := &fakeProcessor{chunksFor: map[string][]string{"doc-1": {"chunk one", "chunk two"}}}
+	chunks := &fakeChunkStore{}
 
-	w := New(ingestions, documents, processor, 0)
+	w := New(ingestions, documents, processor, chunks, 0)
 
 	if err := w.Run(context.Background()); err != nil {
 		t.Fatalf("Run() returned error: %v", err)
@@ -85,7 +97,6 @@ func TestWorker_Run_ProcessesPendingIngestion_Success(t *testing.T) {
 	if len(ingestions.calls) != 2 {
 		t.Fatalf("expected 2 UpdateStatus calls, got %d: %+v", len(ingestions.calls), ingestions.calls)
 	}
-
 	if got := ingestions.calls[0]; got.id != "ing-1" || got.status != model.IngestionProcessing {
 		t.Errorf("expected first call to mark processing, got %+v", got)
 	}
@@ -96,21 +107,32 @@ func TestWorker_Run_ProcessesPendingIngestion_Success(t *testing.T) {
 		t.Errorf("expected empty error message on success, got %q", ingestions.calls[1].errMsg)
 	}
 
-	if len(processor.processed) != 1 || processor.processed[0] != "doc-1" {
-		t.Errorf("expected processor to be called with doc-1, got %v", processor.processed)
+	if len(chunks.saved) != 1 {
+		t.Fatalf("expected chunks to be stored exactly once, got %d calls", len(chunks.saved))
+	}
+	stored := chunks.saved[0]
+	if len(stored) != 2 {
+		t.Fatalf("expected 2 chunks stored, got %d", len(stored))
+	}
+	if stored[0].DocumentID != "doc-1" || stored[0].ChunkIndex != 0 || stored[0].Content != "chunk one" {
+		t.Errorf("unexpected first chunk: %+v", stored[0])
+	}
+	if stored[1].DocumentID != "doc-1" || stored[1].ChunkIndex != 1 || stored[1].Content != "chunk two" {
+		t.Errorf("unexpected second chunk: %+v", stored[1])
 	}
 }
 
-func TestWorker_Run_ProcessingFails_MarksFailed(t *testing.T) {
+func TestWorker_Run_ChunkPersistenceFails_MarksFailed(t *testing.T) {
 	ing := &model.Ingestion{ID: "ing-1", DocumentID: "doc-1", Status: model.IngestionPending}
-	doc := &model.Document{ID: "doc-1", Name: "a.md"}
-	processErr := errors.New("embedding service unavailable")
+	doc := &model.Document{ID: "doc-1"}
+	storeErr := errors.New("database unavailable")
 
 	ingestions := &fakeIngestionService{pending: []*model.Ingestion{ing}}
 	documents := &fakeDocumentGetter{docs: map[string]*model.Document{"doc-1": doc}}
-	processor := &fakeProcessor{err: processErr}
+	processor := &fakeProcessor{chunksFor: map[string][]string{"doc-1": {"a chunk"}}}
+	chunkStore := &fakeChunkStore{err: storeErr}
 
-	w := New(ingestions, documents, processor, 0)
+	w := New(ingestions, documents, processor, chunkStore, 0)
 
 	if err := w.Run(context.Background()); err != nil {
 		t.Fatalf("Run() returned error: %v", err)
@@ -122,10 +144,88 @@ func TestWorker_Run_ProcessingFails_MarksFailed(t *testing.T) {
 
 	final := ingestions.calls[1]
 	if final.status != model.IngestionFailed {
+		t.Errorf("expected final status failed when chunk persistence fails, got %s", final.status)
+	}
+	if final.errMsg == "" {
+		t.Error("expected a non-empty error message describing the persistence failure")
+	}
+
+	// The ingestion must never have been marked completed at any point —
+	// not just that the *final* status is failed, but that completed
+	// never appears in the call history at all.
+	for _, c := range ingestions.calls {
+		if c.status == model.IngestionCompleted {
+			t.Errorf("ingestion must not become completed when chunk persistence fails; got call %+v", c)
+		}
+	}
+
+	// Chunks were attempted, but the ingestion must not be marked
+	// completed since CreateBatch failed.
+	if len(chunkStore.saved) != 1 {
+		t.Errorf("expected CreateBatch to have been attempted once, got %d", len(chunkStore.saved))
+	}
+}
+
+func TestWorker_Run_EmptyChunks_MarksFailed(t *testing.T) {
+	ing := &model.Ingestion{ID: "ing-1", DocumentID: "doc-1", Status: model.IngestionPending}
+	doc := &model.Document{ID: "doc-1"}
+
+	ingestions := &fakeIngestionService{pending: []*model.Ingestion{ing}}
+	documents := &fakeDocumentGetter{docs: map[string]*model.Document{"doc-1": doc}}
+	// Processor succeeds but produces zero chunks — e.g. a document that
+	// normalizes down to nothing processable.
+	processor := &fakeProcessor{chunksFor: map[string][]string{"doc-1": {}}}
+	chunkStore := &fakeChunkStore{}
+
+	w := New(ingestions, documents, processor, chunkStore, 0)
+
+	if err := w.Run(context.Background()); err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+
+	if len(ingestions.calls) != 2 {
+		t.Fatalf("expected 2 UpdateStatus calls, got %d: %+v", len(ingestions.calls), ingestions.calls)
+	}
+
+	final := ingestions.calls[1]
+	if final.status != model.IngestionFailed {
+		t.Errorf("expected status failed when processing produces zero chunks, got %s", final.status)
+	}
+	if final.errMsg == "" {
+		t.Error("expected a non-empty error message explaining why it failed")
+	}
+
+	// Persisting an empty batch should never even be attempted — there's
+	// nothing to persist, and reaching CreateBatch at all would risk it
+	// silently no-oping and the caller mistaking that for success.
+	if len(chunkStore.saved) != 0 {
+		t.Errorf("expected CreateBatch not to be called for zero chunks, got %d calls", len(chunkStore.saved))
+	}
+}
+
+func TestWorker_Run_ProcessingFails_MarksFailed_NoChunksStored(t *testing.T) {
+	ing := &model.Ingestion{ID: "ing-1", DocumentID: "doc-1", Status: model.IngestionPending}
+	doc := &model.Document{ID: "doc-1"}
+	processErr := errors.New("could not normalize content")
+
+	ingestions := &fakeIngestionService{pending: []*model.Ingestion{ing}}
+	documents := &fakeDocumentGetter{docs: map[string]*model.Document{"doc-1": doc}}
+	processor := &fakeProcessor{err: processErr}
+	chunkStore := &fakeChunkStore{}
+
+	w := New(ingestions, documents, processor, chunkStore, 0)
+
+	if err := w.Run(context.Background()); err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+
+	final := ingestions.calls[len(ingestions.calls)-1]
+	if final.status != model.IngestionFailed {
 		t.Errorf("expected final status failed, got %s", final.status)
 	}
-	if final.errMsg != processErr.Error() {
-		t.Errorf("expected error message %q, got %q", processErr.Error(), final.errMsg)
+
+	if len(chunkStore.saved) != 0 {
+		t.Errorf("expected CreateBatch never called when processing fails, got %d calls", len(chunkStore.saved))
 	}
 }
 
@@ -133,10 +233,11 @@ func TestWorker_Run_DocumentFetchFails_MarksFailed(t *testing.T) {
 	ing := &model.Ingestion{ID: "ing-1", DocumentID: "doc-missing", Status: model.IngestionPending}
 
 	ingestions := &fakeIngestionService{pending: []*model.Ingestion{ing}}
-	documents := &fakeDocumentGetter{docs: map[string]*model.Document{}} // empty: doc-missing isn't there
+	documents := &fakeDocumentGetter{docs: map[string]*model.Document{}} // doc-missing isn't there
 	processor := &fakeProcessor{}
+	chunkStore := &fakeChunkStore{}
 
-	w := New(ingestions, documents, processor, 0)
+	w := New(ingestions, documents, processor, chunkStore, 0)
 
 	if err := w.Run(context.Background()); err != nil {
 		t.Fatalf("Run() returned error: %v", err)
@@ -154,10 +255,11 @@ func TestWorker_Run_DocumentFetchFails_MarksFailed(t *testing.T) {
 		t.Error("expected a non-empty error message describing the fetch failure")
 	}
 
-	// The processor should never have been reached since the document
-	// couldn't be loaded.
 	if len(processor.processed) != 0 {
 		t.Errorf("expected processor not to be called, got %v", processor.processed)
+	}
+	if len(chunkStore.saved) != 0 {
+		t.Errorf("expected chunk store not to be called, got %d calls", len(chunkStore.saved))
 	}
 }
 
@@ -165,8 +267,9 @@ func TestWorker_Run_NoPendingIngestions_NoOp(t *testing.T) {
 	ingestions := &fakeIngestionService{pending: nil}
 	documents := &fakeDocumentGetter{docs: map[string]*model.Document{}}
 	processor := &fakeProcessor{}
+	chunkStore := &fakeChunkStore{}
 
-	w := New(ingestions, documents, processor, 0)
+	w := New(ingestions, documents, processor, chunkStore, 0)
 
 	if err := w.Run(context.Background()); err != nil {
 		t.Fatalf("Run() returned error: %v", err)
@@ -178,6 +281,9 @@ func TestWorker_Run_NoPendingIngestions_NoOp(t *testing.T) {
 	if len(processor.processed) != 0 {
 		t.Errorf("expected processor not to be called, got %v", processor.processed)
 	}
+	if len(chunkStore.saved) != 0 {
+		t.Errorf("expected chunk store not to be called, got %d calls", len(chunkStore.saved))
+	}
 }
 
 func TestWorker_Run_ListPendingError_ReturnsError(t *testing.T) {
@@ -186,8 +292,9 @@ func TestWorker_Run_ListPendingError_ReturnsError(t *testing.T) {
 	ingestions := &fakeIngestionService{listErr: listErr}
 	documents := &fakeDocumentGetter{docs: map[string]*model.Document{}}
 	processor := &fakeProcessor{}
+	chunkStore := &fakeChunkStore{}
 
-	w := New(ingestions, documents, processor, 0)
+	w := New(ingestions, documents, processor, chunkStore, 0)
 
 	err := w.Run(context.Background())
 	if !errors.Is(err, listErr) {
@@ -197,17 +304,14 @@ func TestWorker_Run_ListPendingError_ReturnsError(t *testing.T) {
 	if len(ingestions.calls) != 0 {
 		t.Errorf("expected no UpdateStatus calls when listing pending fails, got %d", len(ingestions.calls))
 	}
-	if len(processor.processed) != 0 {
-		t.Errorf("expected processor not to be called, got %v", processor.processed)
-	}
 }
 
 func TestWorker_Run_MultipleIngestions_OneFailureDoesNotStopBatch(t *testing.T) {
 	okIng := &model.Ingestion{ID: "ing-ok", DocumentID: "doc-ok", Status: model.IngestionPending}
 	badIng := &model.Ingestion{ID: "ing-bad", DocumentID: "doc-bad", Status: model.IngestionPending}
 
-	docOK := &model.Document{ID: "doc-ok", Name: "ok.md"}
-	docBad := &model.Document{ID: "doc-bad", Name: "bad.md"}
+	docOK := &model.Document{ID: "doc-ok"}
+	docBad := &model.Document{ID: "doc-bad"}
 
 	ingestions := &fakeIngestionService{pending: []*model.Ingestion{badIng, okIng}}
 	documents := &fakeDocumentGetter{docs: map[string]*model.Document{
@@ -215,38 +319,44 @@ func TestWorker_Run_MultipleIngestions_OneFailureDoesNotStopBatch(t *testing.T) 
 		"doc-bad": docBad,
 	}}
 
-	processErr := errors.New("processing failed")
 	processor := &conditionalProcessor{
-		failFor: map[string]error{"doc-bad": processErr},
+		failFor:   map[string]error{"doc-bad": errors.New("processing failed")},
+		chunksFor: map[string][]string{"doc-ok": {"a chunk"}},
 	}
+	chunkStore := &fakeChunkStore{}
 
-	w := New(ingestions, documents, processor, 0)
+	w := New(ingestions, documents, processor, chunkStore, 0)
 
 	if err := w.Run(context.Background()); err != nil {
 		t.Fatalf("Run() returned error: %v", err)
 	}
 
-	// 2 calls per ingestion (processing + terminal) x 2 ingestions = 4.
+	// 2 UpdateStatus calls per ingestion (processing + terminal) x 2 ingestions = 4.
 	if len(ingestions.calls) != 4 {
 		t.Fatalf("expected 4 UpdateStatus calls, got %d: %+v", len(ingestions.calls), ingestions.calls)
 	}
 
-	var gotBadFinal, gotOKFinal *statusCall
+	var badFinal, okFinal *statusCall
 	for i := range ingestions.calls {
 		c := ingestions.calls[i]
 		if c.id == "ing-bad" && (c.status == model.IngestionFailed || c.status == model.IngestionCompleted) {
-			gotBadFinal = &ingestions.calls[i]
+			badFinal = &ingestions.calls[i]
 		}
 		if c.id == "ing-ok" && (c.status == model.IngestionFailed || c.status == model.IngestionCompleted) {
-			gotOKFinal = &ingestions.calls[i]
+			okFinal = &ingestions.calls[i]
 		}
 	}
 
-	if gotBadFinal == nil || gotBadFinal.status != model.IngestionFailed {
-		t.Errorf("expected ing-bad to end failed, got %+v", gotBadFinal)
+	if badFinal == nil || badFinal.status != model.IngestionFailed {
+		t.Errorf("expected ing-bad to end failed, got %+v", badFinal)
 	}
-	if gotOKFinal == nil || gotOKFinal.status != model.IngestionCompleted {
-		t.Errorf("expected ing-ok to end completed despite ing-bad failing, got %+v", gotOKFinal)
+	if okFinal == nil || okFinal.status != model.IngestionCompleted {
+		t.Errorf("expected ing-ok to end completed despite ing-bad failing, got %+v", okFinal)
+	}
+
+	// Only the successful ingestion's chunks should have been stored.
+	if len(chunkStore.saved) != 1 {
+		t.Fatalf("expected exactly 1 CreateBatch call (for the successful ingestion), got %d", len(chunkStore.saved))
 	}
 }
 
@@ -264,8 +374,9 @@ func TestWorker_Run_RespectsBatchSize(t *testing.T) {
 		"doc-3": {ID: "doc-3"},
 	}}
 	processor := &fakeProcessor{}
+	chunkStore := &fakeChunkStore{}
 
-	w := New(ingestions, documents, processor, 2)
+	w := New(ingestions, documents, processor, chunkStore, 2)
 
 	if err := w.Run(context.Background()); err != nil {
 		t.Fatalf("Run() returned error: %v", err)
@@ -283,13 +394,14 @@ func TestWorker_New_DefaultsBatchSizeWhenZeroOrNegative(t *testing.T) {
 	ingestions := &fakeIngestionService{}
 	documents := &fakeDocumentGetter{docs: map[string]*model.Document{}}
 	processor := &fakeProcessor{}
+	chunkStore := &fakeChunkStore{}
 
-	w := New(ingestions, documents, processor, 0)
+	w := New(ingestions, documents, processor, chunkStore, 0)
 	if w.batchSize != defaultBatchSize {
 		t.Errorf("expected default batch size %d, got %d", defaultBatchSize, w.batchSize)
 	}
 
-	w = New(ingestions, documents, processor, -5)
+	w = New(ingestions, documents, processor, chunkStore, -5)
 	if w.batchSize != defaultBatchSize {
 		t.Errorf("expected default batch size %d for negative input, got %d", defaultBatchSize, w.batchSize)
 	}
@@ -298,12 +410,13 @@ func TestWorker_New_DefaultsBatchSizeWhenZeroOrNegative(t *testing.T) {
 // conditionalProcessor fails only for specific document IDs, letting a
 // test simulate one bad document among several good ones.
 type conditionalProcessor struct {
-	failFor map[string]error
+	failFor   map[string]error
+	chunksFor map[string][]string
 }
 
-func (p *conditionalProcessor) Process(ctx context.Context, doc *model.Document) error {
+func (p *conditionalProcessor) Process(ctx context.Context, doc *model.Document) ([]string, error) {
 	if err, ok := p.failFor[doc.ID]; ok {
-		return err
+		return nil, err
 	}
-	return nil
+	return p.chunksFor[doc.ID], nil
 }
