@@ -15,6 +15,7 @@ type IngestionRepository interface {
 	Create(ctx context.Context, ing *model.Ingestion) error
 	GetByID(ctx context.Context, id string) (*model.Ingestion, error)
 	GetByDocumentID(ctx context.Context, documentID string) ([]*model.Ingestion, error)
+	ListPending(ctx context.Context, limit int) ([]*model.Ingestion, error)
 	UpdateStatus(ctx context.Context, id string, status model.IngestionStatus, errMsg string) error
 }
 
@@ -91,6 +92,49 @@ func (r *IngestionRepo) GetByDocumentID(ctx context.Context, documentID string) 
 	`
 
 	rows, err := r.db.Query(ctx, query, documentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ingestions := make([]*model.Ingestion, 0)
+
+	for rows.Next() {
+		ing := &model.Ingestion{}
+		if err := rows.Scan(
+			&ing.ID,
+			&ing.DocumentID,
+			&ing.Status,
+			&ing.Error,
+			&ing.StartedAt,
+			&ing.CompletedAt,
+			&ing.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		ingestions = append(ingestions, ing)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return ingestions, nil
+}
+
+// ListPending fetches up to limit ingestions in the "pending" state,
+// oldest first — so the worker processes jobs in the order they were
+// requested (FIFO) rather than newest-first.
+func (r *IngestionRepo) ListPending(ctx context.Context, limit int) ([]*model.Ingestion, error) {
+	const query = `
+		SELECT id, document_id, status, COALESCE(error, ''), started_at, completed_at, created_at
+		FROM ingestions
+		WHERE status = 'pending'
+		ORDER BY created_at ASC
+		LIMIT $1
+	`
+
+	rows, err := r.db.Query(ctx, query, limit)
 	if err != nil {
 		return nil, err
 	}

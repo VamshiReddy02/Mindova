@@ -306,3 +306,85 @@ func TestIngestionUpdateStatus_NotFound(t *testing.T) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
+
+func TestIngestionListPending(t *testing.T) {
+	pool, cleanup := testPool(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	docRepo := New(pool)
+	ingRepo := NewIngestionRepo(pool)
+
+	doc := createTestDocument(t, ctx, docRepo)
+	defer pool.Exec(ctx, "DELETE FROM documents WHERE id = $1", doc.ID)
+
+	// One pending, one already completed, one already failed.
+	// Only the pending one should come back.
+	pendingIng := &model.Ingestion{DocumentID: doc.ID, Status: model.IngestionPending}
+	completedIng := &model.Ingestion{DocumentID: doc.ID, Status: model.IngestionCompleted}
+	failedIng := &model.Ingestion{DocumentID: doc.ID, Status: model.IngestionFailed}
+
+	for _, ing := range []*model.Ingestion{pendingIng, completedIng, failedIng} {
+		if err := ingRepo.Create(ctx, ing); err != nil {
+			t.Fatalf("Create() failed: %v", err)
+		}
+	}
+
+	pending, err := ingRepo.ListPending(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListPending() returned error: %v", err)
+	}
+
+	if len(pending) != 1 {
+		t.Fatalf("expected 1 pending ingestion, got %d", len(pending))
+	}
+	if pending[0].ID != pendingIng.ID {
+		t.Errorf("expected pending ingestion %s, got %s", pendingIng.ID, pending[0].ID)
+	}
+	if pending[0].Status != model.IngestionPending {
+		t.Errorf("expected status pending, got %s", pending[0].Status)
+	}
+}
+
+func TestIngestionListPending_RespectsLimit(t *testing.T) {
+	pool, cleanup := testPool(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	docRepo := New(pool)
+	ingRepo := NewIngestionRepo(pool)
+
+	doc := createTestDocument(t, ctx, docRepo)
+	defer pool.Exec(ctx, "DELETE FROM documents WHERE id = $1", doc.ID)
+
+	for i := 0; i < 3; i++ {
+		ing := &model.Ingestion{DocumentID: doc.ID, Status: model.IngestionPending}
+		if err := ingRepo.Create(ctx, ing); err != nil {
+			t.Fatalf("Create() failed: %v", err)
+		}
+	}
+
+	pending, err := ingRepo.ListPending(ctx, 2)
+	if err != nil {
+		t.Fatalf("ListPending() returned error: %v", err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("expected limit to cap result at 2, got %d", len(pending))
+	}
+}
+
+func TestIngestionListPending_Empty(t *testing.T) {
+	pool, cleanup := testPool(t)
+	defer cleanup()
+
+	ingRepo := NewIngestionRepo(pool)
+	ctx := context.Background()
+
+	pending, err := ingRepo.ListPending(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListPending() returned error: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("expected no pending ingestions in a fresh table state, got %d (this test assumes no leftover pending rows from other tests)", len(pending))
+	}
+}
