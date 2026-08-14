@@ -30,6 +30,9 @@ func NewRAGService(retrieval RetrievalService, llmClient llm.Client) RAGService 
 	}
 }
 
+const ragInstruction = "Answer the question using ONLY the retrieved context below. " +
+	"If the answer cannot be found in the context, say you don't know — do not guess."
+
 func (s *ragService) Ask(ctx context.Context, question string, limit int) (*RAGResponse, error) {
 	trimmed := strings.TrimSpace(question)
 	if trimmed == "" {
@@ -42,7 +45,7 @@ func (s *ragService) Ask(ctx context.Context, question string, limit int) (*RAGR
 	}
 
 	messages := []llm.Message{
-		{Role: "system", Content: buildContext(chunks)},
+		{Role: "system", Content: buildSystemPrompt(chunks)},
 		{Role: "user", Content: trimmed},
 	}
 
@@ -57,16 +60,25 @@ func (s *ragService) Ask(ctx context.Context, question string, limit int) (*RAGR
 	}, nil
 }
 
-func buildContext(chunks []*model.DocumentChunk) string {
+func buildSystemPrompt(chunks []*model.DocumentChunk) string {
+	var b strings.Builder
+
+	b.WriteString(ragInstruction)
+	b.WriteString("\n\n")
+	b.WriteString("Retrieved context:\n")
+
 	if len(chunks) == 0 {
-		return "No relevant context was found."
+		b.WriteString("No relevant context was found.")
+		return b.String()
 	}
 
-	var b strings.Builder
-	b.WriteString("Context:\n")
 	for i, c := range chunks {
-		fmt.Fprintf(&b, "[%d] %s\n", i+1, c.Content)
+		fmt.Fprintf(&b, "[Chunk %d]\n%s", i+1, c.Content)
+		if i < len(chunks)-1 {
+			b.WriteString("\n\n")
+		}
 	}
+
 	return b.String()
 }
 

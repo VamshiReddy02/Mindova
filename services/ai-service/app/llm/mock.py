@@ -14,11 +14,10 @@ depending on unpredictable model output.
 """
 
 from app.llm.base import LLMProvider
-from app.schemas.chat import ChatMessage
 
 
 class MockLLMProvider(LLMProvider):
-    async def complete(self, messages: list[ChatMessage]) -> str:
+    async def generate(self, messages: list[dict[str, str]]) -> str:
         question = self._last_user_message(messages)
         context = self._first_system_message(messages)
 
@@ -30,15 +29,15 @@ class MockLLMProvider(LLMProvider):
         return f"[mock answer] {question}"
 
     @staticmethod
-    def _last_user_message(messages: list[ChatMessage]) -> str:
+    def _last_user_message(messages: list[dict[str, str]]) -> str:
         for message in reversed(messages):
-            if message.role == "user":
-                return message.content
+            if message.get("role") == "user":
+                return message.get("content", "")
         return ""
 
     @staticmethod
-    def _first_system_message(messages: list[ChatMessage]) -> str:
+    def _first_system_message(messages: list[dict[str, str]]) -> str:
         for message in messages:
-            if message.role == "system":
-                return message.content
+            if message.get("role") == "system":
+                return message.get("content", "")
         return ""

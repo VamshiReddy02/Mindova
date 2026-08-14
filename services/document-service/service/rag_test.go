@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -145,8 +146,11 @@ func TestRAGService_Ask_NoChunksFound_StillCallsLLM(t *testing.T) {
 	if systemMessage.Role != "system" {
 		t.Fatalf("expected first message to be system role, got %s", systemMessage.Role)
 	}
-	if systemMessage.Content != "No relevant context was found." {
+	if !strings.Contains(systemMessage.Content, "No relevant context was found.") {
 		t.Errorf("expected explicit no-context message, got %q", systemMessage.Content)
+	}
+	if !strings.Contains(systemMessage.Content, ragInstruction) {
+		t.Errorf("expected grounding instruction even with no chunks, got %q", systemMessage.Content)
 	}
 }
 
@@ -184,8 +188,135 @@ func TestRAGService_Ask_BuildsMessagesCorrectly(t *testing.T) {
 	if !strings.Contains(systemMsg.Content, "first chunk content") || !strings.Contains(systemMsg.Content, "second chunk content") {
 		t.Errorf("expected system message to contain both chunks' content, got %q", systemMsg.Content)
 	}
-	if !strings.Contains(systemMsg.Content, "[1]") || !strings.Contains(systemMsg.Content, "[2]") {
-		t.Errorf("expected system message to number chunks [1] and [2], got %q", systemMsg.Content)
+	if !strings.Contains(systemMsg.Content, "[Chunk 1]") || !strings.Contains(systemMsg.Content, "[Chunk 2]") {
+		t.Errorf("expected system message to number chunks [Chunk 1] and [Chunk 2], got %q", systemMsg.Content)
+	}
+}
+
+func TestRAGService_Ask_BuildsGroundedPrompt(t *testing.T) {
+	chunks := []*model.DocumentChunk{
+		{Content: "Mindova is an AI knowledge platform that chunks documents and generates embeddings for retrieval."},
+	}
+	retrieval := &fakeRetrievalService{chunks: chunks}
+	llmClient := &fakeLLMClient{answer: "an answer"}
+
+	svc := NewRAGService(retrieval, llmClient)
+
+	if _, err := svc.Ask(context.Background(), "How does Mindova process documents?", 5); err != nil {
+		t.Fatalf("Ask() returned error: %v", err)
+	}
+
+	systemMsg := llmClient.gotMessages[0]
+
+	// The grounding instruction itself must be present verbatim...
+	if !strings.Contains(systemMsg.Content, ragInstruction) {
+		t.Errorf("expected system message to contain the grounding instruction, got %q", systemMsg.Content)
+	}
+	// ...and specifically must tell the model to stick to the context...
+	if !strings.Contains(systemMsg.Content, "ONLY") {
+		t.Error("expected grounding instruction to restrict the model to ONLY the provided context")
+	}
+	// ...and to admit not knowing rather than guessing.
+	if !strings.Contains(systemMsg.Content, "don't know") {
+		t.Error("expected grounding instruction to tell the model to say it doesn't know if unsure")
+	}
+
+	// The retrieved context must actually be labeled and present.
+	if !strings.Contains(systemMsg.Content, "Retrieved context:") {
+		t.Errorf("expected a \"Retrieved context:\" section, got %q", systemMsg.Content)
+	}
+	if !strings.Contains(systemMsg.Content, "[Chunk 1]") {
+		t.Errorf("expected the chunk to be labeled [Chunk 1], got %q", systemMsg.Content)
+	}
+	if !strings.Contains(systemMsg.Content, chunks[0].Content) {
+		t.Errorf("expected the chunk's content to appear in the prompt, got %q", systemMsg.Content)
+	}
+
+	// Instruction must come before the context, matching the intended
+	// reading order: tell the model the rules, then give it the material.
+	instructionPos := strings.Index(systemMsg.Content, ragInstruction)
+	contextPos := strings.Index(systemMsg.Content, "Retrieved context:")
+	if instructionPos == -1 || contextPos == -1 || instructionPos > contextPos {
+		t.Error("expected the grounding instruction to appear before the retrieved context")
+	}
+}
+
+func TestRAGService_Ask_IncludesAllRetrievedChunks(t *testing.T) {
+	chunks := []*model.DocumentChunk{
+		{Content: "chunk about chunking documents"},
+		{Content: "chunk about generating embeddings"},
+		{Content: "chunk about storing vectors in pgvector"},
+	}
+	retrieval := &fakeRetrievalService{chunks: chunks}
+	llmClient := &fakeLLMClient{answer: "an answer"}
+
+	svc := NewRAGService(retrieval, llmClient)
+
+	if _, err := svc.Ask(context.Background(), "How does Mindova work?", 5); err != nil {
+		t.Fatalf("Ask() returned error: %v", err)
+	}
+
+	systemMsg := llmClient.gotMessages[0].Content
+
+	for i, c := range chunks {
+		label := fmt.Sprintf("[Chunk %d]", i+1)
+		if !strings.Contains(systemMsg, label) {
+			t.Errorf("expected label %q in system message, got %q", label, systemMsg)
+		}
+		if !strings.Contains(systemMsg, c.Content) {
+			t.Errorf("expected chunk %d's content (%q) to appear in system message", i, c.Content)
+		}
+	}
+
+	// Order matters too: chunk N's label should appear before chunk N+1's.
+	prevPos := -1
+	for i := range chunks {
+		label := fmt.Sprintf("[Chunk %d]", i+1)
+		pos := strings.Index(systemMsg, label)
+		if pos <= prevPos {
+			t.Errorf("expected %q to appear after the previous chunk's label, got position %d (previous: %d)", label, pos, prevPos)
+		}
+		prevPos = pos
+	}
+}
+
+func TestRAGService_Ask_DoesNotLeakChunksOutsidePrompt(t *testing.T) {
+	chunks := []*model.DocumentChunk{
+		{Content: "this chunk content must never appear in the user message"},
+	}
+	retrieval := &fakeRetrievalService{chunks: chunks}
+	llmClient := &fakeLLMClient{answer: "an answer"}
+
+	svc := NewRAGService(retrieval, llmClient)
+
+	question := "What does Mindova do?"
+	if _, err := svc.Ask(context.Background(), question, 5); err != nil {
+		t.Fatalf("Ask() returned error: %v", err)
+	}
+
+	if len(llmClient.gotMessages) != 2 {
+		t.Fatalf("expected exactly 2 messages, got %d", len(llmClient.gotMessages))
+	}
+
+	userMsg := llmClient.gotMessages[1]
+	if userMsg.Role != "user" {
+		t.Fatalf("expected second message to be user role, got %s", userMsg.Role)
+	}
+
+	// The user message must be exactly the question — nothing appended,
+	// nothing prepended, and definitely no chunk content mixed in.
+	if userMsg.Content != question {
+		t.Errorf("expected user message to be exactly %q, got %q", question, userMsg.Content)
+	}
+	if strings.Contains(userMsg.Content, chunks[0].Content) {
+		t.Error("chunk content leaked into the user message — it must only ever appear in the system message")
+	}
+
+	// And confirm the chunk content DID make it into the system message,
+	// so we know it wasn't simply dropped everywhere.
+	systemMsg := llmClient.gotMessages[0]
+	if !strings.Contains(systemMsg.Content, chunks[0].Content) {
+		t.Error("expected chunk content to be present in the system message")
 	}
 }
 
