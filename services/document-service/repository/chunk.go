@@ -15,14 +15,13 @@ const embeddingDimensions = 8
 type ChunkRepository interface {
 	CreateBatch(ctx context.Context, chunks []*model.DocumentChunk) error
 	GetByDocumentID(ctx context.Context, documentID string) ([]*model.DocumentChunk, error)
+	SearchSimilar(ctx context.Context, embedding []float32, limit int) ([]*model.DocumentChunk, error)
 }
 
-// ChunkRepo is the PostgreSQL-backed implementation of ChunkRepository.
 type ChunkRepo struct {
 	db *pgxpool.Pool
 }
 
-// NewChunkRepo creates a ChunkRepo backed by the given connection pool.
 func NewChunkRepo(db *pgxpool.Pool) *ChunkRepo {
 	return &ChunkRepo{db: db}
 }
@@ -105,4 +104,57 @@ func (r *ChunkRepo) GetByDocumentID(ctx context.Context, documentID string) ([]*
 	return chunks, nil
 }
 
+func (r *ChunkRepo) SearchSimilar(ctx context.Context, embedding []float32, limit int) ([]*model.DocumentChunk, error) {
+	if len(embedding) != embeddingDimensions {
+		return nil, fmt.Errorf(
+			"SearchSimilar: query embedding has %d dimensions, expected %d",
+			len(embedding), embeddingDimensions,
+		)
+	}
+
+	const query = `
+		SELECT id, document_id, chunk_index, content, embedding, created_at
+		FROM document_chunks
+		WHERE embedding IS NOT NULL
+		ORDER BY embedding <=> $1
+		LIMIT $2
+	`
+
+	vec := pgvector.NewVector(embedding)
+
+	rows, err := r.db.Query(ctx, query, vec, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	chunks := make([]*model.DocumentChunk, 0)
+
+	for rows.Next() {
+		c := &model.DocumentChunk{}
+		var resultVec pgvector.Vector
+
+		if err := rows.Scan(
+			&c.ID,
+			&c.DocumentID,
+			&c.ChunkIndex,
+			&c.Content,
+			&resultVec,
+			&c.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+
+		c.Embedding = resultVec.Slice()
+		chunks = append(chunks, c)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return chunks, nil
+}
+
+// Compile-time check that *ChunkRepo satisfies ChunkRepository.
 var _ ChunkRepository = (*ChunkRepo)(nil)

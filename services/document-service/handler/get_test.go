@@ -30,7 +30,7 @@ func TestGetByID_Success(t *testing.T) {
 			return want, nil
 		},
 	}
-	h := New(svc)
+	h := New(svc, &stubRetrievalService{})
 
 	req := httptest.NewRequest(http.MethodGet, "/documents/doc-123", nil)
 	rec := httptest.NewRecorder()
@@ -60,7 +60,7 @@ func TestGetByID_NotFound(t *testing.T) {
 			return nil, repository.ErrNotFound
 		},
 	}
-	h := New(svc)
+	h := New(svc, &stubRetrievalService{})
 
 	req := httptest.NewRequest(http.MethodGet, "/documents/does-not-exist", nil)
 	rec := httptest.NewRecorder()
@@ -86,7 +86,7 @@ func TestGetByID_ServiceError(t *testing.T) {
 			return nil, errUnimplemented // stand-in for any unexpected error
 		},
 	}
-	h := New(svc)
+	h := New(svc, &stubRetrievalService{})
 
 	req := httptest.NewRequest(http.MethodGet, "/documents/doc-123", nil)
 	rec := httptest.NewRecorder()
@@ -105,7 +105,7 @@ func TestGetByID_MissingID(t *testing.T) {
 			return nil, nil
 		},
 	}
-	h := New(svc)
+	h := New(svc, &stubRetrievalService{})
 
 	req := httptest.NewRequest(http.MethodGet, "/documents/", nil)
 	rec := httptest.NewRecorder()
@@ -124,7 +124,7 @@ func TestGetByID_WrongMethod(t *testing.T) {
 			return nil, nil
 		},
 	}
-	h := New(svc)
+	h := New(svc, &stubRetrievalService{})
 
 	req := httptest.NewRequest(http.MethodPost, "/documents/doc-123", nil)
 	rec := httptest.NewRecorder()

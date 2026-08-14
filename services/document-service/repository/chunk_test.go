@@ -306,3 +306,220 @@ func TestChunkCascadeDeletesWithDocument(t *testing.T) {
 		t.Errorf("expected chunks to be cascade-deleted with their document, got %d remaining", len(remaining))
 	}
 }
+
+// --- SearchSimilar -----------------------------------------------------
+
+func TestChunkSearchSimilar(t *testing.T) {
+	pool, cleanup := testPool(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	docRepo := New(pool)
+	chunkRepo := NewChunkRepo(pool)
+
+	doc := createTestDocument(t, ctx, docRepo)
+	defer pool.Exec(ctx, "DELETE FROM documents WHERE id = $1", doc.ID)
+
+	queryVec := []float32{1, 0, 0, 0, 0, 0, 0, 0}
+
+	chunks := []*model.DocumentChunk{
+		{DocumentID: doc.ID, ChunkIndex: 0, Content: "matches query exactly", Embedding: queryVec},
+	}
+	if err := chunkRepo.CreateBatch(ctx, chunks); err != nil {
+		t.Fatalf("CreateBatch() returned error: %v", err)
+	}
+
+	results, err := chunkRepo.SearchSimilar(ctx, queryVec, 10)
+	if err != nil {
+		t.Fatalf("SearchSimilar() returned error: %v", err)
+	}
+
+	if len(results) == 0 {
+		t.Fatal("expected at least one result")
+	}
+
+	found := false
+	for _, r := range results {
+		if r.ID == chunks[0].ID {
+			found = true
+			if r.Content != "matches query exactly" {
+				t.Errorf("expected content %q, got %q", "matches query exactly", r.Content)
+			}
+			if len(r.Embedding) != 8 {
+				t.Errorf("expected embedding dimension 8, got %d", len(r.Embedding))
+			}
+		}
+	}
+	if !found {
+		t.Error("expected the exact-match chunk to appear in results")
+	}
+}
+
+func TestChunkSearchSimilar_OrderedBySimilarity(t *testing.T) {
+	pool, cleanup := testPool(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	docRepo := New(pool)
+	chunkRepo := NewChunkRepo(pool)
+
+	doc := createTestDocument(t, ctx, docRepo)
+	defer pool.Exec(ctx, "DELETE FROM documents WHERE id = $1", doc.ID)
+
+	queryVec := []float32{1, 0, 0, 0, 0, 0, 0, 0}
+
+	// Three embeddings at increasing cosine distance from queryVec:
+	// "near" points almost the same direction, "mid" is a 45-degree
+	// blend, "far" is orthogonal (maximum cosine distance of 1).
+	nearVec := []float32{0.99, 0.01, 0, 0, 0, 0, 0, 0}
+	midVec := []float32{0.5, 0.5, 0, 0, 0, 0, 0, 0}
+	farVec := []float32{0, 0, 0, 0, 0, 0, 0, 1}
+
+	chunks := []*model.DocumentChunk{
+		{DocumentID: doc.ID, ChunkIndex: 0, Content: "far", Embedding: farVec},
+		{DocumentID: doc.ID, ChunkIndex: 1, Content: "near", Embedding: nearVec},
+		{DocumentID: doc.ID, ChunkIndex: 2, Content: "mid", Embedding: midVec},
+	}
+	if err := chunkRepo.CreateBatch(ctx, chunks); err != nil {
+		t.Fatalf("CreateBatch() returned error: %v", err)
+	}
+
+	results, err := chunkRepo.SearchSimilar(ctx, queryVec, 3)
+	if err != nil {
+		t.Fatalf("SearchSimilar() returned error: %v", err)
+	}
+
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+
+	wantOrder := []string{"near", "mid", "far"}
+	for i, r := range results {
+		if r.Content != wantOrder[i] {
+			t.Errorf("position %d: expected content %q, got %q (full order: %v)",
+				i, wantOrder[i], r.Content, contentsOf(results))
+		}
+	}
+}
+
+func TestChunkSearchSimilar_RespectsLimit(t *testing.T) {
+	pool, cleanup := testPool(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	docRepo := New(pool)
+	chunkRepo := NewChunkRepo(pool)
+
+	doc := createTestDocument(t, ctx, docRepo)
+	defer pool.Exec(ctx, "DELETE FROM documents WHERE id = $1", doc.ID)
+
+	chunks := make([]*model.DocumentChunk, 5)
+	for i := range chunks {
+		// Distinct-enough vectors; exact values don't matter for this test.
+		vec := make([]float32, 8)
+		vec[i%8] = 1
+		chunks[i] = &model.DocumentChunk{
+			DocumentID: doc.ID,
+			ChunkIndex: i,
+			Content:    "chunk",
+			Embedding:  vec,
+		}
+	}
+	if err := chunkRepo.CreateBatch(ctx, chunks); err != nil {
+		t.Fatalf("CreateBatch() returned error: %v", err)
+	}
+
+	queryVec := []float32{1, 0, 0, 0, 0, 0, 0, 0}
+	results, err := chunkRepo.SearchSimilar(ctx, queryVec, 2)
+	if err != nil {
+		t.Fatalf("SearchSimilar() returned error: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Fatalf("expected limit to cap results at 2, got %d", len(results))
+	}
+}
+
+func TestChunkSearchSimilar_Empty(t *testing.T) {
+	pool, cleanup := testPool(t)
+	defer cleanup()
+
+	chunkRepo := NewChunkRepo(pool)
+	ctx := context.Background()
+
+	queryVec := []float32{1, 0, 0, 0, 0, 0, 0, 0}
+
+	// This assumes no other test has left chunks behind — every chunk
+	// test in this file cleans up its own document (which cascades to
+	// its chunks) before returning, so the table should be empty at the
+	// start of this test under normal sequential execution.
+	results, err := chunkRepo.SearchSimilar(ctx, queryVec, 10)
+	if err != nil {
+		t.Fatalf("SearchSimilar() returned error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected no results against an empty document_chunks table, got %d", len(results))
+	}
+}
+
+func TestChunkSearchSimilar_IgnoresChunksWithoutEmbedding(t *testing.T) {
+	pool, cleanup := testPool(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	docRepo := New(pool)
+	chunkRepo := NewChunkRepo(pool)
+
+	doc := createTestDocument(t, ctx, docRepo)
+	defer pool.Exec(ctx, "DELETE FROM documents WHERE id = $1", doc.ID)
+
+	// Insert a chunk with NULL embedding directly — CreateBatch always
+	// requires a valid embedding, so this bypasses the repository to set
+	// up a state CreateBatch itself would never produce.
+	_, err := pool.Exec(ctx,
+		`INSERT INTO document_chunks (id, document_id, chunk_index, content)
+		 VALUES (gen_random_uuid(), $1, $2, $3)`,
+		doc.ID, 0, "no embedding",
+	)
+	if err != nil {
+		t.Fatalf("failed to insert chunk without embedding: %v", err)
+	}
+
+	withEmbedding := []*model.DocumentChunk{
+		{DocumentID: doc.ID, ChunkIndex: 1, Content: "has embedding", Embedding: []float32{1, 0, 0, 0, 0, 0, 0, 0}},
+	}
+	if err := chunkRepo.CreateBatch(ctx, withEmbedding); err != nil {
+		t.Fatalf("CreateBatch() returned error: %v", err)
+	}
+
+	queryVec := []float32{1, 0, 0, 0, 0, 0, 0, 0}
+	results, err := chunkRepo.SearchSimilar(ctx, queryVec, 10)
+	if err != nil {
+		t.Fatalf("SearchSimilar() returned error: %v", err)
+	}
+
+	for _, r := range results {
+		if r.Content == "no embedding" {
+			t.Error("expected the chunk without an embedding to be excluded from results")
+		}
+	}
+
+	found := false
+	for _, r := range results {
+		if r.ID == withEmbedding[0].ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected the chunk with a valid embedding to appear in results")
+	}
+}
+
+// contentsOf is a small test helper for readable failure messages.
+func contentsOf(chunks []*model.DocumentChunk) []string {
+	out := make([]string, len(chunks))
+	for i, c := range chunks {
+		out[i] = c.Content
+	}
+	return out
+}

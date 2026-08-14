@@ -56,3 +56,17 @@ func (s *stubService) Delete(ctx context.Context, id string) error {
 	}
 	return s.deleteFn(ctx, id)
 }
+
+// stubRetrievalService is a minimal in-memory RetrievalService for handler
+// tests, following the same unset-field-fails-loudly convention as
+// stubService.
+type stubRetrievalService struct {
+	searchFn func(ctx context.Context, query string, limit int) ([]*model.DocumentChunk, error)
+}
+
+func (s *stubRetrievalService) Search(ctx context.Context, query string, limit int) ([]*model.DocumentChunk, error) {
+	if s.searchFn == nil {
+		return nil, errUnimplemented
+	}
+	return s.searchFn(ctx, query, limit)
+}
