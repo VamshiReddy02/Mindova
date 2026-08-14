@@ -15,31 +15,27 @@ const maxJSONBodySize = 1 << 20 // 1 MB
 type Handler struct {
 	svc       service.DocumentService
 	retrieval service.RetrievalService
+	rag       service.RAGService
 }
 
-func New(svc service.DocumentService, retrieval service.RetrievalService) *Handler {
-	return &Handler{svc: svc, retrieval: retrieval}
+func New(svc service.DocumentService, retrieval service.RetrievalService, rag service.RAGService) *Handler {
+	return &Handler{svc: svc, retrieval: retrieval, rag: rag}
 }
 
-// errorResponse is the JSON body returned for any error response.
 type errorResponse struct {
 	Error string `json:"error"`
 }
 
-// writeJSON writes v as a JSON response body with the given status code.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// writeError writes a JSON error response with the given status code.
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, errorResponse{Error: message})
 }
 
-// extractID pulls the {id} path segment out of a "/documents/{id}" URL.
-// Returns an empty string if no id segment is present.
 func extractID(r *http.Request, prefix string) string {
 	id := strings.TrimPrefix(r.URL.Path, prefix)
 	id = strings.Trim(id, "/")

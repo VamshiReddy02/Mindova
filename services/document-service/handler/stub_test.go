@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/vamshireddy02/mindova/services/document-service/model"
+	"github.com/vamshireddy02/mindova/services/document-service/service"
 )
 
 // stubService is a minimal in-memory DocumentService for handler tests.
@@ -69,4 +70,18 @@ func (s *stubRetrievalService) Search(ctx context.Context, query string, limit i
 		return nil, errUnimplemented
 	}
 	return s.searchFn(ctx, query, limit)
+}
+
+// stubRAGService is a minimal in-memory RAGService for handler tests,
+// following the same unset-field-fails-loudly convention as the other
+// stubs in this file.
+type stubRAGService struct {
+	askFn func(ctx context.Context, question string, limit int) (*service.RAGResponse, error)
+}
+
+func (s *stubRAGService) Ask(ctx context.Context, question string, limit int) (*service.RAGResponse, error) {
+	if s.askFn == nil {
+		return nil, errUnimplemented
+	}
+	return s.askFn(ctx, question, limit)
 }

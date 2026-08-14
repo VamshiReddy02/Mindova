@@ -447,12 +447,19 @@ func TestChunkSearchSimilar_Empty(t *testing.T) {
 	chunkRepo := NewChunkRepo(pool)
 	ctx := context.Background()
 
+	// "Empty table" is the literal condition this test verifies, and
+	// that can't be safely assumed just because every other test in this
+	// file cleans up after itself — other packages' tests (e.g. the RAG
+	// integration test in services/document-service/service) write to
+	// this same shared database too, and Go runs different packages'
+	// tests concurrently by default. So this test explicitly forces the
+	// precondition it needs rather than hoping for it.
+	if _, err := pool.Exec(ctx, "TRUNCATE document_chunks CASCADE"); err != nil {
+		t.Fatalf("failed to truncate document_chunks: %v", err)
+	}
+
 	queryVec := []float32{1, 0, 0, 0, 0, 0, 0, 0}
 
-	// This assumes no other test has left chunks behind — every chunk
-	// test in this file cleans up its own document (which cascades to
-	// its chunks) before returning, so the table should be empty at the
-	// start of this test under normal sequential execution.
 	results, err := chunkRepo.SearchSimilar(ctx, queryVec, 10)
 	if err != nil {
 		t.Fatalf("SearchSimilar() returned error: %v", err)

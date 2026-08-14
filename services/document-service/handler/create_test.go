@@ -20,7 +20,7 @@ func TestCreate_Success(t *testing.T) {
 			return nil
 		},
 	}
-	h := New(svc, &stubRetrievalService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
 
 	body := `{"name":"architecture.md","content":"Mindova is an AI knowledge platform.","content_type":"text/markdown"}`
 	req := httptest.NewRequest(http.MethodPost, "/documents", strings.NewReader(body))
@@ -52,7 +52,7 @@ func TestCreate_MalformedJSON(t *testing.T) {
 			return nil
 		},
 	}
-	h := New(svc, &stubRetrievalService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
 
 	req := httptest.NewRequest(http.MethodPost, "/documents", bytes.NewReader([]byte(`{not valid json`)))
 	rec := httptest.NewRecorder()
@@ -82,7 +82,7 @@ func TestCreate_MissingFields(t *testing.T) {
 					return nil
 				},
 			}
-			h := New(svc, &stubRetrievalService{})
+			h := New(svc, &stubRetrievalService{}, &stubRAGService{})
 
 			req := httptest.NewRequest(http.MethodPost, "/documents", strings.NewReader(tt.body))
 			rec := httptest.NewRecorder()
@@ -102,7 +102,7 @@ func TestCreate_ServiceError(t *testing.T) {
 			return errors.New("database exploded")
 		},
 	}
-	h := New(svc, &stubRetrievalService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
 
 	body := `{"name":"x.md","content":"content","content_type":"text/markdown"}`
 	req := httptest.NewRequest(http.MethodPost, "/documents", strings.NewReader(body))
@@ -122,7 +122,7 @@ func TestCreate_WrongMethod(t *testing.T) {
 			return nil
 		},
 	}
-	h := New(svc, &stubRetrievalService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
 
 	req := httptest.NewRequest(http.MethodGet, "/documents", nil)
 	rec := httptest.NewRecorder()
@@ -142,7 +142,7 @@ func TestCreate_UnknownField(t *testing.T) {
 		},
 	}
 
-	h := New(svc, &stubRetrievalService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
 
 	body := `{
 		"name": "test.md",
@@ -174,7 +174,7 @@ func TestCreate_MultipleJSONObjects(t *testing.T) {
 		},
 	}
 
-	h := New(svc, &stubRetrievalService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
 
 	body := `{"name":"a","content":"x","content_type":"text/plain"}
 {"name":"b","content":"y","content_type":"text/plain"}`
@@ -202,7 +202,7 @@ func TestCreate_BodyTooLarge(t *testing.T) {
 		},
 	}
 
-	h := New(svc, &stubRetrievalService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
 
 	largeContent := strings.Repeat("a", maxJSONBodySize+1)
 

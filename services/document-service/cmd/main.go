@@ -17,6 +17,7 @@ import (
 	"github.com/vamshireddy02/mindova/services/document-service/database"
 	"github.com/vamshireddy02/mindova/services/document-service/embedding"
 	"github.com/vamshireddy02/mindova/services/document-service/handler"
+	"github.com/vamshireddy02/mindova/services/document-service/llm"
 	"github.com/vamshireddy02/mindova/services/document-service/repository"
 	"github.com/vamshireddy02/mindova/services/document-service/service"
 )
@@ -66,8 +67,17 @@ func main() {
 
 	log.Info("using embedding service", "url", embeddingServiceURL)
 
+	llmServiceURL := os.Getenv("LLM_SERVICE_URL")
+	if llmServiceURL == "" {
+		llmServiceURL = "http://localhost:8001"
+	}
+	llmClient := llm.NewHTTPClient(llmServiceURL, nil)
+	ragSvc := service.NewRAGService(retrievalSvc, llmClient)
+
+	log.Info("using llm service", "url", llmServiceURL)
+
 	// 6. Handler
-	h := handler.New(svc, retrievalSvc)
+	h := handler.New(svc, retrievalSvc, ragSvc)
 
 	// 7. Router
 	mux := http.NewServeMux()
@@ -78,9 +88,11 @@ func main() {
 	//                       takes precedence over the /documents/ prefix
 	//                       below; ServeMux prefers the more specific
 	//                       (longer) pattern for an exact path match.
+	// /documents/ask    -> POST (RAG question answering) — same reasoning.
 	// /documents/{id}   -> GET (get by id), PUT (update), DELETE (delete)
 	mux.HandleFunc("/documents", documentsHandler(h))
 	mux.HandleFunc("/documents/search", searchHandler(h))
+	mux.HandleFunc("/documents/ask", askHandler(h))
 	mux.HandleFunc("/documents/", documentHandler(h))
 
 	// Health/readiness
@@ -148,6 +160,18 @@ func searchHandler(h *handler.Handler) http.HandlerFunc {
 		switch r.Method {
 		case http.MethodPost:
 			h.Search(w, r)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+// askHandler dispatches requests to /documents/ask by HTTP method.
+func askHandler(h *handler.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			h.Ask(w, r)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
