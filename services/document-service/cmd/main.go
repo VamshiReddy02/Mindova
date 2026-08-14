@@ -53,14 +53,32 @@ func main() {
 	// 5. Services
 	svc := service.New(repo)
 
-	embedder := &embedding.MockEmbedder{}
+	// NOTE: must match the embedder the worker uses (cmd/run-worker) —
+	// queries embedded here and chunks embedded during ingestion have to
+	// come from the same model, or similarity search compares vectors
+	// from two unrelated spaces and returns meaningless results.
+	embeddingServiceURL := os.Getenv("EMBEDDING_SERVICE_URL")
+	if embeddingServiceURL == "" {
+		embeddingServiceURL = "http://localhost:8001"
+	}
+	embedder := embedding.NewHTTPEmbedder(embeddingServiceURL, nil)
 	retrievalSvc := service.NewRetrievalService(embedder, chunkRepo)
+
+	log.Info("using embedding service", "url", embeddingServiceURL)
 
 	// 6. Handler
 	h := handler.New(svc, retrievalSvc)
 
 	// 7. Router
 	mux := http.NewServeMux()
+
+	// 8. Register document endpoints
+	// /documents        -> POST (create), GET (list)
+	// /documents/search -> POST (search) — registered explicitly so it
+	//                       takes precedence over the /documents/ prefix
+	//                       below; ServeMux prefers the more specific
+	//                       (longer) pattern for an exact path match.
+	// /documents/{id}   -> GET (get by id), PUT (update), DELETE (delete)
 	mux.HandleFunc("/documents", documentsHandler(h))
 	mux.HandleFunc("/documents/search", searchHandler(h))
 	mux.HandleFunc("/documents/", documentHandler(h))

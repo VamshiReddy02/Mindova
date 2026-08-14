@@ -15,6 +15,22 @@ import (
 	"github.com/vamshireddy02/mindova/services/document-service/worker"
 )
 
+// Standalone command: connects to PostgreSQL, wires up the real worker
+// (real repositories, real services, real TextProcessor, real
+// HTTPEmbedder calling the Python AI service), and runs one batch of
+// pending ingestions to completion.
+//
+// This exists as a manual trigger until the worker is wired into
+// main.go's request lifecycle (auto-ingest on document creation) or a
+// background polling loop. Useful for testing the pipeline end-to-end
+// against real data without waiting on either.
+//
+// Run with:
+//
+//	export APP_NAME=run-worker
+//	export DB_PORT=5433
+//	export EMBEDDING_SERVICE_URL=http://localhost:8001
+//	go run ./services/document-service/cmd/run-worker
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -39,7 +55,14 @@ func main() {
 	ingestionService := service.NewIngestionService(ingestionRepo)
 
 	processor := worker.NewTextProcessor(0)
-	embedder := &embedding.MockEmbedder{}
+
+	embeddingServiceURL := os.Getenv("EMBEDDING_SERVICE_URL")
+	if embeddingServiceURL == "" {
+		embeddingServiceURL = "http://localhost:8001"
+	}
+	embedder := embedding.NewHTTPEmbedder(embeddingServiceURL, nil)
+
+	fmt.Println("using embedding service:", embeddingServiceURL)
 
 	w := worker.New(ingestionService, documentService, processor, embedder, chunkRepo, 0)
 
