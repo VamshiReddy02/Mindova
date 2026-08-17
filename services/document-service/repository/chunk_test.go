@@ -363,6 +363,20 @@ func TestChunkSearchSimilar_OrderedBySimilarity(t *testing.T) {
 	docRepo := New(pool)
 	chunkRepo := NewChunkRepo(pool)
 
+	// This test asserts an EXACT result set and EXACT order (near, mid,
+	// far) from a LIMIT 3 query. SearchSimilar intentionally has no
+	// document_id filter — it searches across every chunk in the table,
+	// which is correct real-world behavior for RAG. That means any
+	// leftover chunks from manual testing (e.g. curl'ing /documents/ask
+	// against a real document) compete for those same top-3 slots and
+	// can silently displace "far" if their embedding happens to land
+	// closer to queryVec. Truncate first so this test's assertions are
+	// about our three controlled chunks, not whatever else happens to be
+	// sitting in the table.
+	if _, err := pool.Exec(ctx, "TRUNCATE document_chunks CASCADE"); err != nil {
+		t.Fatalf("failed to truncate document_chunks: %v", err)
+	}
+
 	doc := createTestDocument(t, ctx, docRepo)
 	defer pool.Exec(ctx, "DELETE FROM documents WHERE id = $1", doc.ID)
 

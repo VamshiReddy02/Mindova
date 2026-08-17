@@ -149,7 +149,7 @@ func TestRAGService_Ask_NoChunksFound_StillCallsLLM(t *testing.T) {
 	if !strings.Contains(systemMessage.Content, "No relevant context was found.") {
 		t.Errorf("expected explicit no-context message, got %q", systemMessage.Content)
 	}
-	if !strings.Contains(systemMessage.Content, ragInstruction) {
+	if !strings.Contains(systemMessage.Content, ragSystemPreamble) {
 		t.Errorf("expected grounding instruction even with no chunks, got %q", systemMessage.Content)
 	}
 }
@@ -209,21 +209,21 @@ func TestRAGService_Ask_BuildsGroundedPrompt(t *testing.T) {
 	systemMsg := llmClient.gotMessages[0]
 
 	// The grounding instruction itself must be present verbatim...
-	if !strings.Contains(systemMsg.Content, ragInstruction) {
+	if !strings.Contains(systemMsg.Content, ragSystemPreamble) {
 		t.Errorf("expected system message to contain the grounding instruction, got %q", systemMsg.Content)
 	}
 	// ...and specifically must tell the model to stick to the context...
 	if !strings.Contains(systemMsg.Content, "ONLY") {
 		t.Error("expected grounding instruction to restrict the model to ONLY the provided context")
 	}
-	// ...and to admit not knowing rather than guessing.
-	if !strings.Contains(systemMsg.Content, "don't know") {
-		t.Error("expected grounding instruction to tell the model to say it doesn't know if unsure")
+	// ...and to admit insufficient information rather than guessing.
+	if !strings.Contains(systemMsg.Content, insufficientInfoPhrase) {
+		t.Error("expected grounding instruction to include the exact insufficient-information phrase")
 	}
 
 	// The retrieved context must actually be labeled and present.
-	if !strings.Contains(systemMsg.Content, "Retrieved context:") {
-		t.Errorf("expected a \"Retrieved context:\" section, got %q", systemMsg.Content)
+	if !strings.Contains(systemMsg.Content, "Context:") {
+		t.Errorf("expected a \"Context:\" section, got %q", systemMsg.Content)
 	}
 	if !strings.Contains(systemMsg.Content, "[Chunk 1]") {
 		t.Errorf("expected the chunk to be labeled [Chunk 1], got %q", systemMsg.Content)
@@ -234,10 +234,118 @@ func TestRAGService_Ask_BuildsGroundedPrompt(t *testing.T) {
 
 	// Instruction must come before the context, matching the intended
 	// reading order: tell the model the rules, then give it the material.
-	instructionPos := strings.Index(systemMsg.Content, ragInstruction)
-	contextPos := strings.Index(systemMsg.Content, "Retrieved context:")
+	instructionPos := strings.Index(systemMsg.Content, ragSystemPreamble)
+	contextPos := strings.Index(systemMsg.Content, "Context:")
 	if instructionPos == -1 || contextPos == -1 || instructionPos > contextPos {
 		t.Error("expected the grounding instruction to appear before the retrieved context")
+	}
+}
+
+// --- New production-quality prompt tests ------------------------------
+//
+// These exercise buildRAGMessages directly (white-box, same package)
+// rather than only through the fakeLLMClient integration path used
+// above — more precise for checking exact prompt structure.
+
+func TestRAGService_Ask_UsesContext(t *testing.T) {
+	chunks := []*model.DocumentChunk{
+		{Content: "Mindova stores documents in PostgreSQL and generates embeddings for retrieval."},
+	}
+
+	messages := buildRAGMessages("What does Mindova store?", chunks)
+
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(messages))
+	}
+
+	systemMsg := messages[0]
+	if systemMsg.Role != "system" {
+		t.Fatalf("expected first message role system, got %s", systemMsg.Role)
+	}
+	if !strings.Contains(systemMsg.Content, "ONLY the provided context") {
+		t.Error("expected system message to instruct answering ONLY from the provided context")
+	}
+	if !strings.Contains(systemMsg.Content, chunks[0].Content) {
+		t.Errorf("expected chunk content to be present in the system message, got %q", systemMsg.Content)
+	}
+
+	userMsg := messages[1]
+	if userMsg.Role != "user" {
+		t.Fatalf("expected second message role user, got %s", userMsg.Role)
+	}
+	if userMsg.Content != "What does Mindova store?" {
+		t.Errorf("expected user message to be exactly the question, got %q", userMsg.Content)
+	}
+	if strings.Contains(userMsg.Content, chunks[0].Content) {
+		t.Error("chunk content must not appear in the user message")
+	}
+}
+
+func TestRAGService_Ask_DoesNotInvent(t *testing.T) {
+	chunks := []*model.DocumentChunk{
+		{Content: "Mindova was built using Go and Python."},
+	}
+
+	messages := buildRAGMessages("some question", chunks)
+	systemMsg := messages[0].Content
+
+	if !strings.Contains(systemMsg, "Do not invent information.") {
+		t.Error("expected explicit \"Do not invent information.\" rule in the system message")
+	}
+	if !strings.Contains(systemMsg, insufficientInfoPhrase) {
+		t.Errorf("expected the exact insufficient-information phrase %q in the system message", insufficientInfoPhrase)
+	}
+	if !strings.Contains(systemMsg, "Be concise") {
+		t.Error("expected an explicit conciseness instruction in the system message")
+	}
+	if !strings.Contains(systemMsg, "Do not reveal") {
+		t.Error("expected an explicit instruction not to expose the prompt/context to the user")
+	}
+}
+
+func TestRAGService_Ask_ContextFormatting(t *testing.T) {
+	chunks := []*model.DocumentChunk{
+		{Content: "first chunk content"},
+		{Content: "second chunk content"},
+	}
+
+	messages := buildRAGMessages("a question", chunks)
+	systemMsg := messages[0].Content
+
+	// "Context:" header must be present, and the first chunk must
+	// immediately follow it (allowing only the single newline the
+	// builder inserts, not stray blank lines or reordering).
+	wantHeaderThenFirstChunk := "Context:\n[Chunk 1]\nfirst chunk content"
+	if !strings.Contains(systemMsg, wantHeaderThenFirstChunk) {
+		t.Errorf("expected %q immediately after the header, got %q", wantHeaderThenFirstChunk, systemMsg)
+	}
+
+	// Chunks must be separated by exactly one blank line: content, then
+	// "\n\n", then the next chunk's label.
+	wantSeparator := "first chunk content\n\n[Chunk 2]\nsecond chunk content"
+	if !strings.Contains(systemMsg, wantSeparator) {
+		t.Errorf("expected chunks separated by a single blank line, got %q", systemMsg)
+	}
+}
+
+func TestRAGService_Ask_IncludesMultipleChunks(t *testing.T) {
+	chunks := []*model.DocumentChunk{
+		{Content: "chunk about chunking documents"},
+		{Content: "chunk about generating embeddings"},
+		{Content: "chunk about storing vectors in pgvector"},
+	}
+
+	messages := buildRAGMessages("How does Mindova work?", chunks)
+	systemMsg := messages[0].Content
+
+	for i, c := range chunks {
+		label := fmt.Sprintf("[Chunk %d]", i+1)
+		if !strings.Contains(systemMsg, label) {
+			t.Errorf("expected label %q in system message", label)
+		}
+		if !strings.Contains(systemMsg, c.Content) {
+			t.Errorf("expected chunk %d's content (%q) in system message", i, c.Content)
+		}
 	}
 }
 
