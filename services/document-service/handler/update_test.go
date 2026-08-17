@@ -21,7 +21,7 @@ func TestUpdate_Success(t *testing.T) {
 			return nil
 		},
 	}
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	body := `{"name":"renamed.md","content":"updated content","content_type":"text/markdown"}`
 	req := httptest.NewRequest(http.MethodPut, "/documents/doc-123", strings.NewReader(body))
@@ -48,7 +48,7 @@ func TestUpdate_NotFound(t *testing.T) {
 			return repository.ErrNotFound
 		},
 	}
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	body := `{"name":"x.md","content":"x","content_type":"text/plain"}`
 	req := httptest.NewRequest(http.MethodPut, "/documents/does-not-exist", strings.NewReader(body))
@@ -68,7 +68,7 @@ func TestUpdate_MalformedJSON(t *testing.T) {
 			return nil
 		},
 	}
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	req := httptest.NewRequest(http.MethodPut, "/documents/doc-123", strings.NewReader(`{bad json`))
 	rec := httptest.NewRecorder()
@@ -98,7 +98,7 @@ func TestUpdate_MissingFields(t *testing.T) {
 					return nil
 				},
 			}
-			h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+			h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 			req := httptest.NewRequest(http.MethodPut, "/documents/doc-123", strings.NewReader(tt.body))
 			rec := httptest.NewRecorder()
@@ -119,7 +119,7 @@ func TestUpdate_MissingID(t *testing.T) {
 			return nil
 		},
 	}
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	body := `{"name":"x.md","content":"x","content_type":"text/plain"}`
 	req := httptest.NewRequest(http.MethodPut, "/documents/", strings.NewReader(body))
@@ -138,7 +138,7 @@ func TestUpdate_ServiceError(t *testing.T) {
 			return errUnimplemented
 		},
 	}
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	body := `{"name":"x.md","content":"x","content_type":"text/plain"}`
 	req := httptest.NewRequest(http.MethodPut, "/documents/doc-123", strings.NewReader(body))
@@ -158,7 +158,7 @@ func TestUpdate_WrongMethod(t *testing.T) {
 			return nil
 		},
 	}
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/documents/doc-123", nil)
 	rec := httptest.NewRecorder()
@@ -178,7 +178,7 @@ func TestUpdate_UnknownField(t *testing.T) {
 		},
 	}
 
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	body := `{
 		"name": "test.md",
@@ -210,7 +210,7 @@ func TestUpdate_MultipleJSONObjects(t *testing.T) {
 		},
 	}
 
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	body := `{"name":"a","content":"x","content_type":"text/plain"}
 {"name":"b","content":"y","content_type":"text/plain"}`

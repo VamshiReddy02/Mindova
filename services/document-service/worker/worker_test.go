@@ -3,7 +3,9 @@ package worker
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/vamshireddy02/mindova/services/document-service/model"
 )
@@ -21,10 +23,12 @@ type fakeIngestionService struct {
 	pending []*model.Ingestion
 	listErr error
 
-	calls []statusCall
+	calls         []statusCall
+	listCallCount int
 }
 
 func (f *fakeIngestionService) ListPending(ctx context.Context, limit int) ([]*model.Ingestion, error) {
+	f.listCallCount++
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -579,4 +583,144 @@ func (p *conditionalProcessor) Process(ctx context.Context, doc *model.Document)
 		return nil, err
 	}
 	return p.chunksFor[doc.ID], nil
+}
+
+func TestWorker_RunLoop_PollsRepeatedlyUntilCancelled(t *testing.T) {
+	ingestions := &fakeIngestionService{}
+	documents := &fakeDocumentGetter{docs: map[string]*model.Document{}}
+	processor := &fakeProcessor{}
+	embedder := &fakeEmbedder{}
+	chunkStore := &fakeChunkStore{}
+
+	w := New(ingestions, documents, processor, embedder, chunkStore, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- w.RunLoop(ctx, 5*time.Millisecond, nil)
+	}()
+
+	// Let several ticks elapse, then stop the loop.
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+
+	// Wait for RunLoop to actually return — this happens-before
+	// relationship (channel receive) is what makes reading
+	// ingestions.listCallCount afterward race-free, since RunLoop's
+	// goroutine is guaranteed to have finished writing to it by the
+	// time we read.
+	err := <-done
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected RunLoop to return context.Canceled, got %v", err)
+	}
+
+	if ingestions.listCallCount < 2 {
+		t.Errorf("expected RunLoop to poll more than once in 30ms with a 5ms interval, got %d calls", ingestions.listCallCount)
+	}
+}
+
+func TestWorker_RunLoop_RunsImmediatelyOnStart(t *testing.T) {
+	ingestions := &fakeIngestionService{}
+	documents := &fakeDocumentGetter{docs: map[string]*model.Document{}}
+	processor := &fakeProcessor{}
+	embedder := &fakeEmbedder{}
+	chunkStore := &fakeChunkStore{}
+
+	// A long interval — if RunLoop waited for the first tick before
+	// doing anything, listCallCount would still be 0 by the time we
+	// cancel almost immediately below.
+	w := New(ingestions, documents, processor, embedder, chunkStore, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- w.RunLoop(ctx, 1*time.Hour, nil)
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+	cancel()
+	<-done
+
+	if ingestions.listCallCount < 1 {
+		t.Error("expected RunLoop to call Run immediately on start, before waiting for the first tick")
+	}
+}
+
+func TestWorker_RunLoop_ReportsErrorsButKeepsPolling(t *testing.T) {
+	ingestions := &fakeIngestionService{listErr: errors.New("transient database error")}
+	documents := &fakeDocumentGetter{docs: map[string]*model.Document{}}
+	processor := &fakeProcessor{}
+	embedder := &fakeEmbedder{}
+	chunkStore := &fakeChunkStore{}
+
+	w := New(ingestions, documents, processor, embedder, chunkStore, 0)
+
+	var errCount int
+	var mu sync.Mutex
+	onError := func(err error) {
+		mu.Lock()
+		errCount++
+		mu.Unlock()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- w.RunLoop(ctx, 5*time.Millisecond, onError)
+	}()
+
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	if errCount < 2 {
+		t.Errorf("expected onError to be called more than once as the loop kept retrying, got %d calls", errCount)
+	}
+	// The loop must have kept going despite every pass failing — proven
+	// by listCallCount tracking multiple attempts, not just one.
+	if ingestions.listCallCount < 2 {
+		t.Errorf("expected RunLoop to keep polling despite errors, got %d calls", ingestions.listCallCount)
+	}
+}
+
+func TestWorker_RunLoop_DefaultsIntervalWhenZero(t *testing.T) {
+	// This test only confirms RunLoop doesn't panic/misbehave with
+	// interval=0 (defaults internally to defaultPollInterval) — it
+	// doesn't wait out a real 5s interval, just confirms the immediate
+	// on-start Run still happens and the loop is cancellable promptly.
+	ingestions := &fakeIngestionService{}
+	documents := &fakeDocumentGetter{docs: map[string]*model.Document{}}
+	processor := &fakeProcessor{}
+	embedder := &fakeEmbedder{}
+	chunkStore := &fakeChunkStore{}
+
+	w := New(ingestions, documents, processor, embedder, chunkStore, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- w.RunLoop(ctx, 0, nil)
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("RunLoop did not return promptly after context cancellation")
+	}
+
+	if ingestions.listCallCount < 1 {
+		t.Error("expected at least the immediate on-start Run to have happened")
+	}
 }

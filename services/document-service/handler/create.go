@@ -41,10 +41,18 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, doc)
+	ingestion := &model.Ingestion{DocumentID: doc.ID}
+	if err := h.ingestion.Create(r.Context(), ingestion); err != nil {
+		h.log.Error("failed to enqueue ingestion",
+			"document_id", doc.ID,
+			"error", err.Error(),
+		)
+	}
 
+	writeJSON(w, http.StatusCreated, doc)
 }
 
+// validateCreateDocumentRequest checks required fields are present.
 func validateCreateDocumentRequest(req createDocumentRequest) error {
 	if req.Name == "" {
 		return fmt.Errorf("missing required field: name")

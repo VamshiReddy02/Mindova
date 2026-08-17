@@ -33,7 +33,7 @@ func TestAsk_Success(t *testing.T) {
 			return want, nil
 		},
 	}
-	h := New(&stubService{}, &stubRetrievalService{}, rag)
+	h := New(&stubService{}, &stubRetrievalService{}, rag, &stubIngestionService{}, testLogger())
 
 	body := `{"question":"How does Mindova process documents?","limit":5}`
 	req := httptest.NewRequest(http.MethodPost, "/documents/ask", strings.NewReader(body))
@@ -82,7 +82,7 @@ func TestAsk_ResponseShape_OnlyExpectedFields(t *testing.T) {
 			}, nil
 		},
 	}
-	h := New(&stubService{}, &stubRetrievalService{}, rag)
+	h := New(&stubService{}, &stubRetrievalService{}, rag, &stubIngestionService{}, testLogger())
 
 	body := `{"question":"a question","limit":5}`
 	req := httptest.NewRequest(http.MethodPost, "/documents/ask", strings.NewReader(body))
@@ -128,7 +128,7 @@ func TestAsk_EmptyQuestion(t *testing.T) {
 			return nil, service.ErrEmptyQuery
 		},
 	}
-	h := New(&stubService{}, &stubRetrievalService{}, rag)
+	h := New(&stubService{}, &stubRetrievalService{}, rag, &stubIngestionService{}, testLogger())
 
 	body := `{"question":"","limit":5}`
 	req := httptest.NewRequest(http.MethodPost, "/documents/ask", strings.NewReader(body))
@@ -147,7 +147,7 @@ func TestAsk_WhitespaceQuestion(t *testing.T) {
 			return nil, service.ErrEmptyQuery
 		},
 	}
-	h := New(&stubService{}, &stubRetrievalService{}, rag)
+	h := New(&stubService{}, &stubRetrievalService{}, rag, &stubIngestionService{}, testLogger())
 
 	body := `{"question":"   \t\n  ","limit":5}`
 	req := httptest.NewRequest(http.MethodPost, "/documents/ask", strings.NewReader(body))
@@ -166,7 +166,7 @@ func TestAsk_InvalidLimit(t *testing.T) {
 			return nil, service.ErrInvalidLimit
 		},
 	}
-	h := New(&stubService{}, &stubRetrievalService{}, rag)
+	h := New(&stubService{}, &stubRetrievalService{}, rag, &stubIngestionService{}, testLogger())
 
 	body := `{"question":"a valid question","limit":0}`
 	req := httptest.NewRequest(http.MethodPost, "/documents/ask", strings.NewReader(body))
@@ -185,7 +185,7 @@ func TestAsk_ServiceError(t *testing.T) {
 			return nil, errors.New("llm provider unavailable")
 		},
 	}
-	h := New(&stubService{}, &stubRetrievalService{}, rag)
+	h := New(&stubService{}, &stubRetrievalService{}, rag, &stubIngestionService{}, testLogger())
 
 	body := `{"question":"a valid question","limit":5}`
 	req := httptest.NewRequest(http.MethodPost, "/documents/ask", strings.NewReader(body))
@@ -205,7 +205,7 @@ func TestAsk_RetrievalError(t *testing.T) {
 			return nil, fmt.Errorf("rag: retrieval failed: %w", errors.New("embedding service unreachable"))
 		},
 	}
-	h := New(&stubService{}, &stubRetrievalService{}, rag)
+	h := New(&stubService{}, &stubRetrievalService{}, rag, &stubIngestionService{}, testLogger())
 
 	body := `{"question":"a valid question","limit":5}`
 	req := httptest.NewRequest(http.MethodPost, "/documents/ask", strings.NewReader(body))
@@ -225,7 +225,7 @@ func TestAsk_LLMError(t *testing.T) {
 			return nil, fmt.Errorf("rag: generation failed: %w", errors.New("llm provider timed out"))
 		},
 	}
-	h := New(&stubService{}, &stubRetrievalService{}, rag)
+	h := New(&stubService{}, &stubRetrievalService{}, rag, &stubIngestionService{}, testLogger())
 
 	body := `{"question":"a valid question","limit":5}`
 	req := httptest.NewRequest(http.MethodPost, "/documents/ask", strings.NewReader(body))
@@ -245,7 +245,7 @@ func TestAsk_MalformedJSON(t *testing.T) {
 			return nil, nil
 		},
 	}
-	h := New(&stubService{}, &stubRetrievalService{}, rag)
+	h := New(&stubService{}, &stubRetrievalService{}, rag, &stubIngestionService{}, testLogger())
 
 	req := httptest.NewRequest(http.MethodPost, "/documents/ask", strings.NewReader(`{bad json`))
 	rec := httptest.NewRecorder()
@@ -264,7 +264,7 @@ func TestAsk_UnknownField(t *testing.T) {
 			return nil, nil
 		},
 	}
-	h := New(&stubService{}, &stubRetrievalService{}, rag)
+	h := New(&stubService{}, &stubRetrievalService{}, rag, &stubIngestionService{}, testLogger())
 
 	body := `{"question":"a question","limit":5,"unexpected":"field"}`
 	req := httptest.NewRequest(http.MethodPost, "/documents/ask", strings.NewReader(body))
@@ -284,7 +284,7 @@ func TestAsk_WrongMethod(t *testing.T) {
 			return nil, nil
 		},
 	}
-	h := New(&stubService{}, &stubRetrievalService{}, rag)
+	h := New(&stubService{}, &stubRetrievalService{}, rag, &stubIngestionService{}, testLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/documents/ask", nil)
 	rec := httptest.NewRecorder()
@@ -305,7 +305,7 @@ func TestAsk_NoSources(t *testing.T) {
 			}, nil
 		},
 	}
-	h := New(&stubService{}, &stubRetrievalService{}, rag)
+	h := New(&stubService{}, &stubRetrievalService{}, rag, &stubIngestionService{}, testLogger())
 
 	body := `{"question":"an unanswerable question","limit":5}`
 	req := httptest.NewRequest(http.MethodPost, "/documents/ask", strings.NewReader(body))

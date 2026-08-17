@@ -18,7 +18,7 @@ func TestDelete_Success(t *testing.T) {
 			return nil
 		},
 	}
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	req := httptest.NewRequest(http.MethodDelete, "/documents/doc-123", nil)
 	rec := httptest.NewRecorder()
@@ -39,7 +39,7 @@ func TestDelete_NotFound(t *testing.T) {
 			return repository.ErrNotFound
 		},
 	}
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	req := httptest.NewRequest(http.MethodDelete, "/documents/does-not-exist", nil)
 	rec := httptest.NewRecorder()
@@ -58,7 +58,7 @@ func TestDelete_MissingID(t *testing.T) {
 			return nil
 		},
 	}
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	req := httptest.NewRequest(http.MethodDelete, "/documents/", nil)
 	rec := httptest.NewRecorder()
@@ -76,7 +76,7 @@ func TestDelete_ServiceError(t *testing.T) {
 			return errUnimplemented
 		},
 	}
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	req := httptest.NewRequest(http.MethodDelete, "/documents/doc-123", nil)
 	rec := httptest.NewRecorder()
@@ -95,7 +95,7 @@ func TestDelete_WrongMethod(t *testing.T) {
 			return nil
 		},
 	}
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/documents/doc-123", nil)
 	rec := httptest.NewRecorder()

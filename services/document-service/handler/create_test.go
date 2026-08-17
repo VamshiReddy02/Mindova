@@ -20,7 +20,7 @@ func TestCreate_Success(t *testing.T) {
 			return nil
 		},
 	}
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	body := `{"name":"architecture.md","content":"Mindova is an AI knowledge platform.","content_type":"text/markdown"}`
 	req := httptest.NewRequest(http.MethodPost, "/documents", strings.NewReader(body))
@@ -52,7 +52,7 @@ func TestCreate_MalformedJSON(t *testing.T) {
 			return nil
 		},
 	}
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	req := httptest.NewRequest(http.MethodPost, "/documents", bytes.NewReader([]byte(`{not valid json`)))
 	rec := httptest.NewRecorder()
@@ -82,7 +82,7 @@ func TestCreate_MissingFields(t *testing.T) {
 					return nil
 				},
 			}
-			h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+			h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 			req := httptest.NewRequest(http.MethodPost, "/documents", strings.NewReader(tt.body))
 			rec := httptest.NewRecorder()
@@ -102,7 +102,7 @@ func TestCreate_ServiceError(t *testing.T) {
 			return errors.New("database exploded")
 		},
 	}
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	body := `{"name":"x.md","content":"content","content_type":"text/markdown"}`
 	req := httptest.NewRequest(http.MethodPost, "/documents", strings.NewReader(body))
@@ -122,7 +122,7 @@ func TestCreate_WrongMethod(t *testing.T) {
 			return nil
 		},
 	}
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/documents", nil)
 	rec := httptest.NewRecorder()
@@ -142,7 +142,7 @@ func TestCreate_UnknownField(t *testing.T) {
 		},
 	}
 
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	body := `{
 		"name": "test.md",
@@ -174,7 +174,7 @@ func TestCreate_MultipleJSONObjects(t *testing.T) {
 		},
 	}
 
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	body := `{"name":"a","content":"x","content_type":"text/plain"}
 {"name":"b","content":"y","content_type":"text/plain"}`
@@ -202,7 +202,7 @@ func TestCreate_BodyTooLarge(t *testing.T) {
 		},
 	}
 
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	largeContent := strings.Repeat("a", maxJSONBodySize+1)
 
@@ -224,5 +224,80 @@ func TestCreate_BodyTooLarge(t *testing.T) {
 			rec.Code,
 			rec.Body.String(),
 		)
+	}
+}
+
+func TestCreate_EnqueuesIngestion(t *testing.T) {
+	svc := &stubService{
+		createFn: func(ctx context.Context, doc *model.Document) error {
+			doc.ID = "doc-123"
+			return nil
+		},
+	}
+
+	var gotIngestion *model.Ingestion
+	ingestion := &stubIngestionService{
+		createFn: func(ctx context.Context, ing *model.Ingestion) error {
+			gotIngestion = ing
+			return nil
+		},
+	}
+
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, ingestion, testLogger())
+
+	body := `{"name":"architecture.md","content":"Mindova is an AI knowledge platform.","content_type":"text/markdown"}`
+	req := httptest.NewRequest(http.MethodPost, "/documents", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected status 201, got %d, body=%s", rec.Code, rec.Body.String())
+	}
+
+	if gotIngestion == nil {
+		t.Fatal("expected an ingestion to be enqueued, but IngestionService.Create was never called")
+	}
+	if gotIngestion.DocumentID != "doc-123" {
+		t.Errorf("expected ingestion enqueued for document_id doc-123, got %q", gotIngestion.DocumentID)
+	}
+}
+
+func TestCreate_IngestionEnqueueFailure_StillReturns201(t *testing.T) {
+	svc := &stubService{
+		createFn: func(ctx context.Context, doc *model.Document) error {
+			doc.ID = "doc-123"
+			return nil
+		},
+	}
+
+	// Ingestion enqueue fails, but this must not fail the document
+	// creation response — the document really was created, and Create's
+	// job is to report that truthfully. See the comment on Create in
+	// create.go for why this is best-effort rather than fatal.
+	ingestion := &stubIngestionService{
+		createFn: func(ctx context.Context, ing *model.Ingestion) error {
+			return errors.New("database unavailable")
+		},
+	}
+
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, ingestion, testLogger())
+
+	body := `{"name":"architecture.md","content":"Mindova is an AI knowledge platform.","content_type":"text/markdown"}`
+	req := httptest.NewRequest(http.MethodPost, "/documents", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected status 201 even when ingestion enqueue fails, got %d, body=%s", rec.Code, rec.Body.String())
+	}
+
+	var got model.Document
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if got.ID != "doc-123" {
+		t.Errorf("expected the created document in the response despite ingestion failure, got %+v", got)
 	}
 }

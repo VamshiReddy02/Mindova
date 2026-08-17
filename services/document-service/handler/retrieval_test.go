@@ -29,7 +29,7 @@ func TestSearch_Success(t *testing.T) {
 			return want, nil
 		},
 	}
-	h := New(&stubService{}, retrieval, &stubRAGService{})
+	h := New(&stubService{}, retrieval, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	body := `{"query":"How does Mindova process documents?","limit":5}`
 	req := httptest.NewRequest(http.MethodPost, "/documents/search", strings.NewReader(body))
@@ -66,7 +66,7 @@ func TestSearch_EmptyQuery(t *testing.T) {
 			return nil, service.ErrEmptyQuery
 		},
 	}
-	h := New(&stubService{}, retrieval, &stubRAGService{})
+	h := New(&stubService{}, retrieval, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	body := `{"query":"","limit":5}`
 	req := httptest.NewRequest(http.MethodPost, "/documents/search", strings.NewReader(body))
@@ -85,7 +85,7 @@ func TestSearch_InvalidLimit(t *testing.T) {
 			return nil, service.ErrInvalidLimit
 		},
 	}
-	h := New(&stubService{}, retrieval, &stubRAGService{})
+	h := New(&stubService{}, retrieval, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	body := `{"query":"a valid query","limit":0}`
 	req := httptest.NewRequest(http.MethodPost, "/documents/search", strings.NewReader(body))
@@ -104,7 +104,7 @@ func TestSearch_ServiceError(t *testing.T) {
 			return nil, errors.New("embedding provider unavailable")
 		},
 	}
-	h := New(&stubService{}, retrieval, &stubRAGService{})
+	h := New(&stubService{}, retrieval, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	body := `{"query":"a valid query","limit":5}`
 	req := httptest.NewRequest(http.MethodPost, "/documents/search", strings.NewReader(body))
@@ -124,7 +124,7 @@ func TestSearch_MalformedJSON(t *testing.T) {
 			return nil, nil
 		},
 	}
-	h := New(&stubService{}, retrieval, &stubRAGService{})
+	h := New(&stubService{}, retrieval, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	req := httptest.NewRequest(http.MethodPost, "/documents/search", strings.NewReader(`{bad json`))
 	rec := httptest.NewRecorder()
@@ -143,7 +143,7 @@ func TestSearch_UnknownField(t *testing.T) {
 			return nil, nil
 		},
 	}
-	h := New(&stubService{}, retrieval, &stubRAGService{})
+	h := New(&stubService{}, retrieval, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	body := `{"query":"a query","limit":5,"unknown":"field"}`
 	req := httptest.NewRequest(http.MethodPost, "/documents/search", strings.NewReader(body))
@@ -163,7 +163,7 @@ func TestSearch_MultipleJSONObjects(t *testing.T) {
 			return nil, nil
 		},
 	}
-	h := New(&stubService{}, retrieval, &stubRAGService{})
+	h := New(&stubService{}, retrieval, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	body := `{"query":"a","limit":5}
 {"query":"b","limit":5}`
@@ -184,7 +184,7 @@ func TestSearch_WrongMethod(t *testing.T) {
 			return nil, nil
 		},
 	}
-	h := New(&stubService{}, retrieval, &stubRAGService{})
+	h := New(&stubService{}, retrieval, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/documents/search", nil)
 	rec := httptest.NewRecorder()
@@ -202,7 +202,7 @@ func TestSearch_EmptyResults(t *testing.T) {
 			return []*model.DocumentChunk{}, nil
 		},
 	}
-	h := New(&stubService{}, retrieval, &stubRAGService{})
+	h := New(&stubService{}, retrieval, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	body := `{"query":"nothing matches this","limit":5}`
 	req := httptest.NewRequest(http.MethodPost, "/documents/search", strings.NewReader(body))

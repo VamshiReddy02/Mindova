@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/vamshireddy02/mindova/packages/kernel/logger"
 	"github.com/vamshireddy02/mindova/services/document-service/service"
 )
 
@@ -16,10 +17,24 @@ type Handler struct {
 	svc       service.DocumentService
 	retrieval service.RetrievalService
 	rag       service.RAGService
+	ingestion service.IngestionService
+	log       *logger.Logger
 }
 
-func New(svc service.DocumentService, retrieval service.RetrievalService, rag service.RAGService) *Handler {
-	return &Handler{svc: svc, retrieval: retrieval, rag: rag}
+func New(
+	svc service.DocumentService,
+	retrieval service.RetrievalService,
+	rag service.RAGService,
+	ingestion service.IngestionService,
+	log *logger.Logger,
+) *Handler {
+	return &Handler{
+		svc:       svc,
+		retrieval: retrieval,
+		rag:       rag,
+		ingestion: ingestion,
+		log:       log,
+	}
 }
 
 type errorResponse struct {

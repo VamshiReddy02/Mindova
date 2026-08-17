@@ -20,6 +20,7 @@ import (
 	"github.com/vamshireddy02/mindova/services/document-service/llm"
 	"github.com/vamshireddy02/mindova/services/document-service/repository"
 	"github.com/vamshireddy02/mindova/services/document-service/service"
+	"github.com/vamshireddy02/mindova/services/document-service/worker"
 )
 
 func main() {
@@ -50,14 +51,16 @@ func main() {
 	// 4. Repositories
 	repo := repository.New(db)
 	chunkRepo := repository.NewChunkRepo(db)
+	ingestionRepo := repository.NewIngestionRepo(db)
 
 	// 5. Services
 	svc := service.New(repo)
+	ingestionSvc := service.NewIngestionService(ingestionRepo)
 
-	// NOTE: must match the embedder the worker uses (cmd/run-worker) —
-	// queries embedded here and chunks embedded during ingestion have to
-	// come from the same model, or similarity search compares vectors
-	// from two unrelated spaces and returns meaningless results.
+	// NOTE: must match the embedder the worker uses — queries embedded
+	// here and chunks embedded during ingestion have to come from the
+	// same model, or similarity search compares vectors from two
+	// unrelated spaces and returns meaningless results.
 	embeddingServiceURL := os.Getenv("EMBEDDING_SERVICE_URL")
 	if embeddingServiceURL == "" {
 		embeddingServiceURL = "http://localhost:8001"
@@ -76,8 +79,44 @@ func main() {
 
 	log.Info("using llm service", "url", llmServiceURL)
 
+	// 5b. Background ingestion worker.
+	//
+	// This is what makes ingestion actually automatic: POST /documents
+	// enqueues a pending ingestion (see handler.Create), and this
+	// long-running loop — started once, right here, alongside the HTTP
+	// server — continuously picks up whatever's pending. No one has to
+	// manually INSERT a row or run a separate worker binary by hand
+	// anymore; that's still available at cmd/run-worker for one-off
+	// debugging, but the running document-service process is now
+	// self-sufficient.
+	pollInterval := 5 * time.Second
+	if raw := os.Getenv("WORKER_POLL_INTERVAL"); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil {
+			pollInterval = parsed
+		} else {
+			log.Error("invalid WORKER_POLL_INTERVAL, using default", "value", raw, "default", pollInterval.String())
+		}
+	}
+
+	processor := worker.NewTextProcessor(0)
+	w := worker.New(ingestionSvc, svc, processor, embedder, chunkRepo, 0)
+
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	defer workerCancel()
+
+	go func() {
+		err := w.RunLoop(workerCtx, pollInterval, func(err error) {
+			log.Error("worker pass failed", "error", err.Error())
+		})
+		if err != nil && err != context.Canceled {
+			log.Error("worker loop exited unexpectedly", "error", err.Error())
+		}
+	}()
+
+	log.Info("ingestion worker started", "poll_interval", pollInterval.String())
+
 	// 6. Handler
-	h := handler.New(svc, retrievalSvc, ragSvc)
+	h := handler.New(svc, retrievalSvc, ragSvc, ingestionSvc, log)
 
 	// 7. Router
 	mux := http.NewServeMux()
@@ -129,6 +168,11 @@ func main() {
 	<-sigChan
 
 	log.Info("shutdown signal received")
+
+	// Stop the background worker before shutting down the HTTP server —
+	// no new requests to enqueue more ingestions, and RunLoop returns
+	// promptly since it selects on ctx.Done() between passes.
+	workerCancel()
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.App.ShutdownTimeout)
 	defer shutdownCancel()

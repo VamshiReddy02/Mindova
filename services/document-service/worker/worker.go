@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/vamshireddy02/mindova/services/document-service/embedding"
 	"github.com/vamshireddy02/mindova/services/document-service/model"
@@ -13,16 +14,38 @@ type IngestionService interface {
 	UpdateStatus(ctx context.Context, id string, status model.IngestionStatus, errMsg string) error
 }
 
+// DocumentGetter is the subset of service.DocumentService the worker needs
+// to load the document being ingested. service.DocumentService already
+// satisfies this interface structurally.
 type DocumentGetter interface {
 	GetByID(ctx context.Context, id string) (*model.Document, error)
 }
 
+// ChunkStore is the subset of repository.ChunkRepository the worker needs
+// to persist chunks produced by a DocumentProcessor. repository.ChunkRepo
+// already satisfies this interface structurally.
 type ChunkStore interface {
 	CreateBatch(ctx context.Context, chunks []*model.DocumentChunk) error
 }
 
+// defaultBatchSize caps how many pending ingestions Run pulls in one pass.
 const defaultBatchSize = 10
 
+// defaultPollInterval is how often RunLoop calls Run when the caller
+// passes 0 for interval.
+const defaultPollInterval = 5 * time.Second
+
+// Worker polls for pending ingestions and drives each one through its
+// full lifecycle:
+//
+//  1. Load the document.
+//  2. Process it into chunks (DocumentProcessor).
+//  3. Generate an embedding for each chunk (embedding.Embedder).
+//  4. Persist the chunks (ChunkStore).
+//  5. Mark the ingestion completed — only after everything above succeeds.
+//
+// Any failure along the way marks the ingestion failed with the error
+// recorded, rather than leaving it stuck in processing.
 type Worker struct {
 	ingestions IngestionService
 	documents  DocumentGetter
@@ -32,6 +55,8 @@ type Worker struct {
 	batchSize  int
 }
 
+// New creates a Worker. batchSize controls how many pending ingestions
+// Run processes per call; pass 0 to use the default (10).
 func New(
 	ingestions IngestionService,
 	documents DocumentGetter,
@@ -67,8 +92,35 @@ func (w *Worker) Run(ctx context.Context) error {
 	return nil
 }
 
+func (w *Worker) RunLoop(ctx context.Context, interval time.Duration, onError func(error)) error {
+	if interval <= 0 {
+		interval = defaultPollInterval
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	if err := w.Run(ctx); err != nil && onError != nil {
+		onError(err)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if err := w.Run(ctx); err != nil && onError != nil {
+				onError(err)
+			}
+		}
+	}
+}
+
+// mismatched data.
 func (w *Worker) processOne(ctx context.Context, ing *model.Ingestion) {
 	if err := w.ingestions.UpdateStatus(ctx, ing.ID, model.IngestionProcessing, ""); err != nil {
+		// Couldn't even mark it as processing — leave it as-is rather than
+		// risk masking the real problem with a second failing write.
 		return
 	}
 

@@ -22,7 +22,7 @@ func TestList_Success(t *testing.T) {
 			return want, nil
 		},
 	}
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/documents", nil)
 	rec := httptest.NewRecorder()
@@ -52,7 +52,7 @@ func TestList_Empty(t *testing.T) {
 			return []*model.Document{}, nil
 		},
 	}
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/documents", nil)
 	rec := httptest.NewRecorder()
@@ -78,7 +78,7 @@ func TestList_ServiceError(t *testing.T) {
 			return nil, errUnimplemented
 		},
 	}
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/documents", nil)
 	rec := httptest.NewRecorder()
@@ -97,7 +97,7 @@ func TestList_WrongMethod(t *testing.T) {
 			return nil, nil
 		},
 	}
-	h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+	h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 	req := httptest.NewRequest(http.MethodPost, "/documents", nil)
 	rec := httptest.NewRecorder()
@@ -178,7 +178,7 @@ func TestList_LimitParsing(t *testing.T) {
 					return []*model.Document{}, nil
 				},
 			}
-			h := New(svc, &stubRetrievalService{}, &stubRAGService{})
+			h := New(svc, &stubRetrievalService{}, &stubRAGService{}, &stubIngestionService{}, testLogger())
 
 			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
 			rec := httptest.NewRecorder()
