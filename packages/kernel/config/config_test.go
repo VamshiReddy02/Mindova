@@ -59,8 +59,8 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	if cfg.App.Environment != EnvDevelopment {
 		t.Errorf("expected default environment %s, got %s", EnvDevelopment, cfg.App.Environment)
 	}
-	if cfg.App.Host != "localhost" {
-		t.Errorf("expected default host localhost, got %s", cfg.App.Host)
+	if cfg.App.Host != "0.0.0.0" {
+		t.Errorf("expected default host 0.0.0.0, got %s", cfg.App.Host)
 	}
 	if cfg.App.Port != 8080 {
 		t.Errorf("expected default port 8080, got %d", cfg.App.Port)

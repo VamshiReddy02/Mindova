@@ -1,0 +1,17 @@
+# Environment files with real secrets — never commit these.
+# .env.example is the template that IS meant to be committed.
+.env
+.env.*
+!.env.example
+
+# OS cruft
+.DS_Store
+
+# Go build artifacts
+*.exe
+*.test
+
+# Python
+services/ai-service/.venv
+services/ai-service/**/__pycache__
+services/ai-service/.pytest_cache

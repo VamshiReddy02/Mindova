@@ -1,0 +1,26 @@
+# Version control
+.git
+.gitignore
+
+# IDE/editor
+.vscode
+.idea
+
+# OS cruft
+.DS_Store
+
+# Python service — irrelevant to Go image builds, and its own
+# Dockerfile will have its own .dockerignore concerns
+services/ai-service/.venv
+services/ai-service/__pycache__
+services/ai-service/**/__pycache__
+services/ai-service/.pytest_cache
+
+# Local dev artifacts
+*.log
+tmp/
+.env
+.env.*
+
+# Deployment configs aren't needed inside any image build context
+deployments/observability

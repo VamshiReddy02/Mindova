@@ -35,7 +35,7 @@ func loadAppConfig() (AppConfig, error) {
 	name := strings.TrimSpace(os.Getenv("APP_NAME"))
 
 	env := strings.TrimSpace(getEnvWithDefault("APP_ENV", EnvDevelopment))
-	host := strings.TrimSpace(getEnvWithDefault("APP_HOST", "localhost"))
+	host := strings.TrimSpace(getEnvWithDefault("APP_HOST", "0.0.0.0"))
 	logLevel := strings.TrimSpace(getEnvWithDefault("APP_LOG_LEVEL", LogInfo))
 
 	portStr := getEnvWithDefault("APP_PORT", "8080")

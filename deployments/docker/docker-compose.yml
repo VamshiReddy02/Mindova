@@ -1,0 +1,151 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: mindova-postgres-compose
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: mindova
+    volumes:
+      - mindova_postgres_data:/var/lib/postgresql/data
+    # Deliberately NOT publishing a host port ("expose 5432 internally"
+    # per spec) — other services on this Compose network reach it via
+    # the "postgres" DNS name regardless. This also sidesteps the whole
+    # "something else is already listening on host port 5432" class of
+    # problem entirely, since nothing on the host ever binds to it.
+    #
+    # Trade-off: host-side tools (`psql` run directly on your Mac, Go
+    # integration tests using TEST_DATABASE_URL=localhost:...) can't
+    # reach this instance. `docker exec -it mindova-postgres-compose
+    # psql -U postgres -d mindova` still works fine for manual
+    # inspection, since exec runs inside the container's own network
+    # namespace regardless of port publishing. If you want host access
+    # too, uncomment the ports block below (5433, to avoid colliding
+    # with a native Postgres install on 5432):
+    # ports:
+    #   - "5433:5432"
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d mindova"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - mindova
+
+  # One-shot init job: applies every migration in
+  # deployments/postgres/migrations/, in filename order, then exits.
+  # document-service waits for this to complete successfully before it
+  # starts — no more "fresh volume, forgot to run migrations by hand,
+  # container crash-loops on 'vector type not found'" surprise.
+  #
+  # All five migration files use idempotent SQL (CREATE ... IF NOT
+  # EXISTS, ADD COLUMN IF NOT EXISTS), so re-running this against an
+  # already-migrated database on every `docker compose up` is safe and
+  # cheap — it just re-confirms everything's already there and exits.
+  #
+  # This uses plain psql against SQL files rather than a dedicated
+  # migration tool (golang-migrate, etc.) — five files, no rollback
+  # tooling needed yet, and this exact shell script becomes a
+  # Kubernetes initContainer with no changes once we get there.
+  migrate:
+    image: postgres:16-alpine
+    container_name: mindova-migrate-compose
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: postgres
+    volumes:
+      - ../postgres/migrations:/migrations:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        for f in $$(ls /migrations/*.sql | sort); do
+          echo "Applying $$f..."
+          psql -h postgres -U postgres -d mindova -f "$$f"
+        done
+        echo "All migrations applied successfully."
+    networks:
+      - mindova
+
+  ai-service:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/ai-service.Dockerfile
+    image: mindova/ai-service:dev
+    container_name: mindova-ai-service-compose
+    restart: unless-stopped
+    environment:
+      # Defaults keep the stack runnable with zero configuration —
+      # LLM_PROVIDER falls back to "mock" if unset, matching
+      # app/config.py's own default. Real values come from your shell's
+      # exported environment or a deployments/docker/.env file
+      # (git-ignored) — NEVER hardcoded here. See the README note below
+      # this file for both options.
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openrouter/free}
+    ports:
+      - "8001:8001"
+    healthcheck:
+      # No curl in the python:3.12-slim runtime image — use the
+      # container's own Python interpreter to hit its own /health
+      # endpoint instead of installing an extra tool just for this.
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=2)",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - mindova
+
+  document-service:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/document-service.Dockerfile
+    image: mindova/document-service:dev
+    container_name: mindova-document-service-compose
+    restart: unless-stopped
+    environment:
+      # APP_NAME is required by config.Load() (no default) — omitting it
+      # would crash-loop the container immediately.
+      APP_NAME: document-service
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: mindova
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      EMBEDDING_SERVICE_URL: http://ai-service:8001
+      LLM_SERVICE_URL: http://ai-service:8001
+      # APP_HOST defaults to 0.0.0.0 in the kernel config now, so it
+      # doesn't need to be set here — the earlier "connection reset by
+      # peer" bug (binding to localhost inside a container) is fixed at
+      # the source, not worked around per-deployment.
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      ai-service:
+        condition: service_healthy
+    networks:
+      - mindova
+
+networks:
+  mindova:
+    name: mindova
+    external: true
+
+volumes:
+  mindova_postgres_data:
