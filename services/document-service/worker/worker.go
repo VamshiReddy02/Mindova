@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/vamshireddy02/mindova/services/document-service/embedding"
+	"github.com/vamshireddy02/mindova/services/document-service/metrics"
 	"github.com/vamshireddy02/mindova/services/document-service/model"
 )
 
@@ -146,6 +147,7 @@ func (w *Worker) Run(ctx context.Context) error {
 			// Nothing left pending right now.
 			break
 		}
+		metrics.Default.RecordIngestionStarted()
 		batch = append(batch, ing)
 	}
 
@@ -208,6 +210,15 @@ func (w *Worker) RunLoop(ctx context.Context, interval time.Duration, onError fu
 // number of vectors is treated as a failure rather than persisted with
 // mismatched data.
 func (w *Worker) processOne(ctx context.Context, ing *model.Ingestion) {
+	// Recorded via defer so every exit path — success or any of the
+	// failure branches below — has its duration captured exactly once,
+	// without needing a matching metrics.Default.RecordProcessingDuration
+	// call next to every return statement.
+	start := time.Now()
+	defer func() {
+		metrics.Default.RecordProcessingDuration(time.Since(start).Seconds())
+	}()
+
 	doc, err := w.documents.GetByID(ctx, ing.DocumentID)
 	if err != nil {
 		w.failOrRetry(ctx, ing, "failed to load document: "+err.Error())
@@ -258,6 +269,7 @@ func (w *Worker) processOne(ctx context.Context, ing *model.Ingestion) {
 	// reconciliation step can detect and retry stuck jobs. Not
 	// implemented yet.
 	_ = w.ingestions.UpdateStatus(ctx, ing.ID, model.IngestionCompleted, "")
+	metrics.Default.RecordCompleted()
 }
 
 // failOrRetry decides whether a failed ingestion gets another attempt or
@@ -280,7 +292,9 @@ func (w *Worker) processOne(ctx context.Context, ing *model.Ingestion) {
 func (w *Worker) failOrRetry(ctx context.Context, ing *model.Ingestion, message string) {
 	if ing.Attempts < w.maxAttempts {
 		_ = w.ingestions.UpdateStatus(ctx, ing.ID, model.IngestionPending, message)
+		metrics.Default.RecordRetried()
 		return
 	}
 	_ = w.ingestions.UpdateStatus(ctx, ing.ID, model.IngestionFailed, message)
+	metrics.Default.RecordFailed()
 }

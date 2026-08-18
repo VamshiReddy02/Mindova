@@ -19,6 +19,7 @@ import (
 	"github.com/vamshireddy02/mindova/services/document-service/embedding"
 	"github.com/vamshireddy02/mindova/services/document-service/handler"
 	"github.com/vamshireddy02/mindova/services/document-service/llm"
+	"github.com/vamshireddy02/mindova/services/document-service/metrics"
 	"github.com/vamshireddy02/mindova/services/document-service/repository"
 	"github.com/vamshireddy02/mindova/services/document-service/service"
 	"github.com/vamshireddy02/mindova/services/document-service/worker"
@@ -150,6 +151,10 @@ func main() {
 	// Health/readiness
 	mux.HandleFunc("/health", health.HealthHandler)
 	mux.HandleFunc("/ready", health.ReadyHandler)
+
+	// Ingestion pipeline observability, Prometheus text exposition
+	// format — see services/document-service/metrics.
+	mux.HandleFunc("/metrics", metrics.Default.Handler())
 
 	// 9. Middleware
 	finalHandler := middleware.RequestID(
