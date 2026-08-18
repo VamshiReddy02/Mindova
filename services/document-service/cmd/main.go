@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -90,16 +91,25 @@ func main() {
 	// debugging, but the running document-service process is now
 	// self-sufficient.
 	pollInterval := 5 * time.Second
-	if raw := os.Getenv("WORKER_POLL_INTERVAL"); raw != "" {
+	if raw := os.Getenv("WORKER_INTERVAL"); raw != "" {
 		if parsed, err := time.ParseDuration(raw); err == nil {
 			pollInterval = parsed
 		} else {
-			log.Error("invalid WORKER_POLL_INTERVAL, using default", "value", raw, "default", pollInterval.String())
+			log.Error("invalid WORKER_INTERVAL, using default", "value", raw, "default", pollInterval.String())
+		}
+	}
+
+	maxAttempts := 3
+	if raw := os.Getenv("MAX_ATTEMPTS"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			maxAttempts = parsed
+		} else {
+			log.Error("invalid MAX_ATTEMPTS, using default", "value", raw, "default", maxAttempts)
 		}
 	}
 
 	processor := worker.NewTextProcessor(0)
-	w := worker.New(ingestionSvc, svc, processor, embedder, chunkRepo, 0)
+	w := worker.New(ingestionSvc, svc, processor, embedder, chunkRepo, 0, maxAttempts)
 
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	defer workerCancel()
@@ -113,7 +123,10 @@ func main() {
 		}
 	}()
 
-	log.Info("ingestion worker started", "poll_interval", pollInterval.String())
+	log.Info("ingestion worker started",
+		"poll_interval", pollInterval.String(),
+		"max_attempts", maxAttempts,
+	)
 
 	// 6. Handler
 	h := handler.New(svc, retrievalSvc, ragSvc, ingestionSvc, log)

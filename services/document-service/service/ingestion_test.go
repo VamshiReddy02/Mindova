@@ -10,11 +10,12 @@ import (
 )
 
 type mockIngestionRepository struct {
-	createFn          func(context.Context, *model.Ingestion) error
-	getByIDFn         func(context.Context, string) (*model.Ingestion, error)
-	getByDocumentIDFn func(context.Context, string) ([]*model.Ingestion, error)
-	listPendingFn     func(context.Context, int) ([]*model.Ingestion, error)
-	updateStatusFn    func(context.Context, string, model.IngestionStatus, string) error
+	createFn           func(context.Context, *model.Ingestion) error
+	getByIDFn          func(context.Context, string) (*model.Ingestion, error)
+	getByDocumentIDFn  func(context.Context, string) ([]*model.Ingestion, error)
+	listPendingFn      func(context.Context, int) ([]*model.Ingestion, error)
+	claimNextPendingFn func(context.Context) (*model.Ingestion, error)
+	updateStatusFn     func(context.Context, string, model.IngestionStatus, string) error
 }
 
 func (m *mockIngestionRepository) Create(
@@ -43,6 +44,12 @@ func (m *mockIngestionRepository) ListPending(
 	limit int,
 ) ([]*model.Ingestion, error) {
 	return m.listPendingFn(ctx, limit)
+}
+
+func (m *mockIngestionRepository) ClaimNextPending(
+	ctx context.Context,
+) (*model.Ingestion, error) {
+	return m.claimNextPendingFn(ctx)
 }
 
 func (m *mockIngestionRepository) UpdateStatus(
@@ -347,6 +354,65 @@ func TestIngestionService_ListPending_PropagatesError(t *testing.T) {
 			expectedErr,
 			err,
 		)
+	}
+}
+
+func TestIngestionService_ClaimNextPending(t *testing.T) {
+	expected := &model.Ingestion{
+		ID:       "ingestion-1",
+		Status:   model.IngestionProcessing,
+		Attempts: 1,
+	}
+
+	repo := &mockIngestionRepository{
+		claimNextPendingFn: func(ctx context.Context) (*model.Ingestion, error) {
+			return expected, nil
+		},
+	}
+
+	svc := NewIngestionService(repo)
+
+	got, err := svc.ClaimNextPending(context.Background())
+	if err != nil {
+		t.Fatalf("ClaimNextPending() returned error: %v", err)
+	}
+	if got != expected {
+		t.Fatal("ClaimNextPending() returned unexpected ingestion")
+	}
+}
+
+func TestIngestionService_ClaimNextPending_NoneAvailable(t *testing.T) {
+	repo := &mockIngestionRepository{
+		claimNextPendingFn: func(ctx context.Context) (*model.Ingestion, error) {
+			return nil, nil
+		},
+	}
+
+	svc := NewIngestionService(repo)
+
+	got, err := svc.ClaimNextPending(context.Background())
+	if err != nil {
+		t.Fatalf("ClaimNextPending() returned error: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil when nothing is pending, got %+v", got)
+	}
+}
+
+func TestIngestionService_ClaimNextPending_PropagatesError(t *testing.T) {
+	expectedErr := errors.New("repository error")
+
+	repo := &mockIngestionRepository{
+		claimNextPendingFn: func(ctx context.Context) (*model.Ingestion, error) {
+			return nil, expectedErr
+		},
+	}
+
+	svc := NewIngestionService(repo)
+
+	_, err := svc.ClaimNextPending(context.Background())
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected error %v, got %v", expectedErr, err)
 	}
 }
 

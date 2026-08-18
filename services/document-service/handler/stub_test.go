@@ -95,11 +95,12 @@ func (s *stubRAGService) Ask(ctx context.Context, question string, limit int) (*
 // handler tests today (Create's best-effort ingestion enqueue); the rest
 // exist purely to satisfy service.IngestionService.
 type stubIngestionService struct {
-	createFn          func(ctx context.Context, ingestion *model.Ingestion) error
-	getByIDFn         func(ctx context.Context, id string) (*model.Ingestion, error)
-	getByDocumentIDFn func(ctx context.Context, documentID string) ([]*model.Ingestion, error)
-	listPendingFn     func(ctx context.Context, limit int) ([]*model.Ingestion, error)
-	updateStatusFn    func(ctx context.Context, id string, status model.IngestionStatus, errMsg string) error
+	createFn           func(ctx context.Context, ingestion *model.Ingestion) error
+	getByIDFn          func(ctx context.Context, id string) (*model.Ingestion, error)
+	getByDocumentIDFn  func(ctx context.Context, documentID string) ([]*model.Ingestion, error)
+	listPendingFn      func(ctx context.Context, limit int) ([]*model.Ingestion, error)
+	claimNextPendingFn func(ctx context.Context) (*model.Ingestion, error)
+	updateStatusFn     func(ctx context.Context, id string, status model.IngestionStatus, errMsg string) error
 }
 
 func (s *stubIngestionService) Create(ctx context.Context, ingestion *model.Ingestion) error {
@@ -128,6 +129,13 @@ func (s *stubIngestionService) ListPending(ctx context.Context, limit int) ([]*m
 		return nil, errUnimplemented
 	}
 	return s.listPendingFn(ctx, limit)
+}
+
+func (s *stubIngestionService) ClaimNextPending(ctx context.Context) (*model.Ingestion, error) {
+	if s.claimNextPendingFn == nil {
+		return nil, errUnimplemented
+	}
+	return s.claimNextPendingFn(ctx)
 }
 
 func (s *stubIngestionService) UpdateStatus(ctx context.Context, id string, status model.IngestionStatus, errMsg string) error {

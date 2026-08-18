@@ -12,6 +12,7 @@ type IngestionService interface {
 	GetByID(ctx context.Context, id string) (*model.Ingestion, error)
 	GetByDocumentID(ctx context.Context, documentID string) ([]*model.Ingestion, error)
 	ListPending(ctx context.Context, limit int) ([]*model.Ingestion, error)
+	ClaimNextPending(ctx context.Context) (*model.Ingestion, error)
 	UpdateStatus(
 		ctx context.Context,
 		id string,
@@ -60,6 +61,12 @@ func (s *ingestionService) ListPending(
 	limit int,
 ) ([]*model.Ingestion, error) {
 	return s.repo.ListPending(ctx, limit)
+}
+
+func (s *ingestionService) ClaimNextPending(
+	ctx context.Context,
+) (*model.Ingestion, error) {
+	return s.repo.ClaimNextPending(ctx)
 }
 
 func (s *ingestionService) UpdateStatus(

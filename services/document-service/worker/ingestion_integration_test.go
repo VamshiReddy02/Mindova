@@ -63,7 +63,7 @@ func TestWorker_EndToEnd_IngestionWithEmbeddings(t *testing.T) {
 	embedder := &embedding.MockEmbedder{}
 
 	// --- The worker under test -------------------------------------------------
-	w := New(ingestionService, documentService, processor, embedder, chunkRepo, 0)
+	w := New(ingestionService, documentService, processor, embedder, chunkRepo, 0, 0)
 
 	// 1 & 2: create a real test document.
 	doc := &model.Document{

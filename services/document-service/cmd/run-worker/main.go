@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/vamshireddy02/mindova/packages/kernel/config"
@@ -20,16 +21,17 @@ import (
 // HTTPEmbedder calling the Python AI service), and runs one batch of
 // pending ingestions to completion.
 //
-// This exists as a manual trigger until the worker is wired into
-// main.go's request lifecycle (auto-ingest on document creation) or a
-// background polling loop. Useful for testing the pipeline end-to-end
-// against real data without waiting on either.
+// This exists as a manual one-off trigger for testing the pipeline
+// against real data. The running document-service process now runs its
+// own continuous background worker (see cmd/document-service/main.go),
+// so this is no longer required for normal operation.
 //
 // Run with:
 //
 //	export APP_NAME=run-worker
 //	export DB_PORT=5433
 //	export EMBEDDING_SERVICE_URL=http://localhost:8001
+//	export MAX_ATTEMPTS=3
 //	go run ./services/document-service/cmd/run-worker
 func main() {
 	cfg, err := config.Load()
@@ -64,7 +66,16 @@ func main() {
 
 	fmt.Println("using embedding service:", embeddingServiceURL)
 
-	w := worker.New(ingestionService, documentService, processor, embedder, chunkRepo, 0)
+	maxAttempts := 3
+	if raw := os.Getenv("MAX_ATTEMPTS"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			maxAttempts = parsed
+		} else {
+			fmt.Fprintf(os.Stderr, "invalid MAX_ATTEMPTS %q, using default %d\n", raw, maxAttempts)
+		}
+	}
+
+	w := worker.New(ingestionService, documentService, processor, embedder, chunkRepo, 0, maxAttempts)
 
 	fmt.Println("running worker...")
 
