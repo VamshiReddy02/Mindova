@@ -1,0 +1,133 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: document-service
+  namespace: mindova
+  labels:
+    app.kubernetes.io/name: document-service
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: mindova
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: document-service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: document-service
+        app.kubernetes.io/component: api
+        app.kubernetes.io/part-of: mindova
+    spec:
+      initContainers:
+        # Kubernetes Jobs have no native "wait until this Job finished"
+        # dependency the way Compose's `condition:
+        # service_completed_successfully` does. Rather than granting
+        # this Pod Kubernetes API access + RBAC just to poll the
+        # mindova-migrate Job's status, this checks the actual thing we
+        # care about directly: does the schema exist yet? Blocks Pod
+        # startup until the documents table is queryable, which is only
+        # true once the migration Job has actually succeeded.
+        - name: wait-for-schema
+          image: postgres:16-alpine
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mindova-secrets
+                  key: DB_PASSWORD
+          command:
+            - sh
+            - -c
+            - |
+              until psql -h postgres -U postgres -d mindova -c "SELECT 1 FROM documents LIMIT 1" > /dev/null 2>&1; do
+                echo "waiting for database schema (documents table) to exist..."
+                sleep 3
+              done
+              echo "schema found, proceeding."
+      containers:
+        - name: document-service
+          image: mindova/document-service:dev
+          # Same reasoning as ai-service.yaml: locally-built image,
+          # explicit rather than relying on distribution defaults.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            # APP_NAME is required by config.Load() (no default) — same
+            # gotcha we hit with the manual `docker run` and Compose
+            # steps; still required here.
+            - name: APP_NAME
+              value: document-service
+            - name: DB_HOST
+              value: postgres
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              value: mindova
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mindova-secrets
+                  key: DB_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mindova-secrets
+                  key: DB_PASSWORD
+            - name: EMBEDDING_SERVICE_URL
+              value: http://ai-service:8001
+            - name: LLM_SERVICE_URL
+              value: http://ai-service:8001
+            # APP_HOST defaults to 0.0.0.0 in the kernel config (fixed
+            # at the source after the Docker "connection reset by peer"
+            # bug) — no need to set it here either.
+          readinessProbe:
+            # /ready, not /health, for readiness — this is the exact
+            # distinction those two endpoints were built for back in
+            # the health package: /health means "the process is alive",
+            # /ready means "safe to route traffic to." Kubernetes uses
+            # readinessProbe to decide whether to send this Pod traffic
+            # at all.
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: document-service
+  namespace: mindova
+  labels:
+    app.kubernetes.io/name: document-service
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: mindova
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: document-service
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http

@@ -1,0 +1,77 @@
+# One-shot migration Job — the Kubernetes equivalent of Docker Compose's
+# `migrate` service. Applies every SQL file from the mindova-migrations
+# ConfigMap, in filename order, then exits. document-service's own
+# manifest (built in a later step) will gate its startup on this Job
+# having completed successfully, the same way it waited on Compose's
+# `migrate` service via `condition: service_completed_successfully`.
+#
+# All five migrations use idempotent SQL (CREATE ... IF NOT EXISTS,
+# ADD COLUMN IF NOT EXISTS), so re-running this Job against an
+# already-migrated database is safe — it just reconfirms everything is
+# already there and exits 0 again.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mindova-migrate
+  namespace: mindova
+  labels:
+    app.kubernetes.io/name: mindova-migrate
+    app.kubernetes.io/component: database-migrations
+    app.kubernetes.io/part-of: mindova
+spec:
+  # Jobs aren't automatically re-run by `kubectl apply` once they've
+  # already completed — re-applying this same manifest against an
+  # existing completed Job is a no-op, not a re-run. To apply new
+  # migrations after adding SQL files later, delete the old Job first:
+  #   kubectl delete job mindova-migrate -n mindova
+  # then reapply both this file and the regenerated ConfigMap.
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mindova-migrate
+        app.kubernetes.io/component: database-migrations
+        app.kubernetes.io/part-of: mindova
+    spec:
+      restartPolicy: Never
+      initContainers:
+        # Postgres's StatefulSet is expected to already be Ready by the
+        # time this Job is applied (per the deployment order in this
+        # task), but re-applying everything from scratch shouldn't
+        # depend on getting that timing right by hand — this waits for
+        # real readiness rather than assuming it.
+        - name: wait-for-postgres
+          image: postgres:16-alpine
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h postgres -U postgres -d mindova; do
+                echo "waiting for postgres..."
+                sleep 2
+              done
+      containers:
+        - name: migrate
+          image: postgres:16-alpine
+          env:
+            - name: PGPASSWORD
+              value: postgres
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+              readOnly: true
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              for f in $(ls /migrations/*.sql | sort); do
+                echo "Applying $f..."
+                psql -h postgres -U postgres -d mindova -f "$f"
+              done
+              echo "All migrations applied successfully."
+      volumes:
+        - name: migrations
+          configMap:
+            name: mindova-migrations

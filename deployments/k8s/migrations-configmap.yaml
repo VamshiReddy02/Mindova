@@ -1,0 +1,85 @@
+# Generated from deployments/postgres/migrations/*.sql — do not hand-edit
+# the data below. If you add, remove, or change a migration file,
+# regenerate this ConfigMap with:
+#
+#   kubectl create configmap mindova-migrations \
+#     --from-file=deployments/postgres/migrations \
+#     -n mindova \
+#     --dry-run=client -o yaml \
+#     > deployments/k8s/migrations-configmap.yaml
+#
+# The .sql files themselves remain the single source of truth; this file
+# is a derived artifact kept in sync with them, the same way a compiled
+# binary is derived from source — useful to commit so `kubectl apply`
+# works standalone without needing the generation command run first, but
+# never edited directly.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mindova-migrations
+  namespace: mindova
+  labels:
+    app.kubernetes.io/name: mindova-migrations
+    app.kubernetes.io/component: database-migrations
+    app.kubernetes.io/part-of: mindova
+data:
+  001_create_documents.sql: |
+    CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+    CREATE TABLE IF NOT EXISTS documents (
+        id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name         TEXT NOT NULL,
+        content      TEXT NOT NULL,
+        content_type TEXT NOT NULL,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+  002_create_ingestions.sql: |
+    CREATE TABLE IF NOT EXISTS ingestions (
+        id UUID PRIMARY KEY,
+        document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        status VARCHAR(20) NOT NULL,
+        error TEXT,
+        started_at TIMESTAMPTZ,
+        completed_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT ingestions_status_check
+            CHECK (status IN (
+                'pending',
+                'processing',
+                'completed',
+                'failed'
+            ))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ingestions_document_id
+        ON ingestions(document_id);
+
+    CREATE INDEX IF NOT EXISTS idx_ingestions_status
+        ON ingestions(status);
+
+  003_create_document_chunks.sql: |
+    CREATE TABLE IF NOT EXISTS document_chunks (
+        id UUID PRIMARY KEY,
+        document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        chunk_index INT NOT NULL,
+        content TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT document_chunks_unique_index UNIQUE (document_id, chunk_index)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_document_chunks_document_id
+        ON document_chunks(document_id);
+
+  004_add_chunk_embeddings.sql: |
+    CREATE EXTENSION IF NOT EXISTS vector;
+
+    ALTER TABLE document_chunks
+    ADD COLUMN IF NOT EXISTS embedding vector(8);
+
+  005_add_ingestion_retry_tracking.sql: |
+    ALTER TABLE ingestions
+        ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS last_error TEXT,
+        ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ;

@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-service
+  namespace: mindova
+  labels:
+    app.kubernetes.io/name: ai-service
+    app.kubernetes.io/component: ai
+    app.kubernetes.io/part-of: mindova
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ai-service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ai-service
+        app.kubernetes.io/component: ai
+        app.kubernetes.io/part-of: mindova
+    spec:
+      containers:
+        - name: ai-service
+          image: mindova/ai-service:dev
+          # Explicit, not left to the distribution default: this is a
+          # locally-built image with no registry to pull from. Docker
+          # Desktop's kubeadm-based node shares the same image store as
+          # `docker build`, so IfNotPresent correctly finds it already
+          # there rather than attempting (and failing) a registry pull.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8001
+              name: http
+          env:
+            # Non-sensitive config, inline for now — these move into
+            # configmap.yaml when that's the actual task, the same way
+            # Postgres's credentials are flagged to move into
+            # secret.yaml rather than being formalized prematurely here.
+            - name: LLM_PROVIDER
+              value: openrouter
+            - name: OPENROUTER_MODEL
+              value: openrouter/free
+            # The real secret — from the Secret created via the
+            # kubectl command in the file header comment, not from a
+            # plain value.
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mindova-secrets
+                  key: OPENROUTER_API_KEY
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            # Modest defaults for a local single-node dev cluster —
+            # tune before this represents anything closer to production
+            # load. Python/FastAPI's baseline footprint is a bit higher
+            # than the Go services, hence slightly more memory headroom
+            # than postgres.yaml's limits.
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-service
+  namespace: mindova
+  labels:
+    app.kubernetes.io/name: ai-service
+    app.kubernetes.io/component: ai
+    app.kubernetes.io/part-of: mindova
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: ai-service
+  ports:
+    - port: 8001
+      targetPort: 8001
+      name: http
