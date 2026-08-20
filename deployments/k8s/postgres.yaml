@@ -10,11 +10,6 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
-  # storageClassName is explicit rather than left to implicit
-  # defaulting — "hostpath" is what `kubectl get storageclass` showed
-  # as this cluster's (default) class. Being explicit means this
-  # manifest keeps working correctly even if the cluster's default
-  # StorageClass ever changes to something else.
   storageClassName: hostpath
   resources:
     requests:
@@ -46,22 +41,27 @@ spec:
       containers:
         - name: postgres
           image: pgvector/pgvector:pg16
+          securityContext:
+            allowPrivilegeEscalation: false
           ports:
             - containerPort: 5432
               name: postgres
           env:
             - name: POSTGRES_USER
-              value: postgres
+              valueFrom:
+                secretKeyRef:
+                  name: mindova-secrets
+                  key: DB_USER
             - name: POSTGRES_PASSWORD
-              value: postgres
+              valueFrom:
+                secretKeyRef:
+                  name: mindova-secrets
+                  key: DB_PASSWORD
             - name: POSTGRES_DB
               value: mindova
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
-          # Same check used as the Docker Compose healthcheck — proven
-          # to correctly signal real readiness (not just "the process
-          # started"), reused here as both probes.
           readinessProbe:
             exec:
               command: ["pg_isready", "-U", "postgres", "-d", "mindova"]
@@ -77,9 +77,6 @@ spec:
             timeoutSeconds: 5
             failureThreshold: 5
           resources:
-            # Modest defaults for a local single-node dev cluster —
-            # tune before this represents anything closer to production
-            # load.
             requests:
               cpu: 250m
               memory: 256Mi
@@ -102,13 +99,6 @@ metadata:
     app.kubernetes.io/component: database
     app.kubernetes.io/part-of: mindova
 spec:
-  # Headless (clusterIP: None) is the standard pairing for a
-  # StatefulSet's governing service — it's what gives each Pod a
-  # stable per-Pod DNS identity (postgres-0.postgres.mindova.svc...),
-  # which matters if this ever scales beyond 1 replica. It still
-  # resolves at the plain service level too, which is the address
-  # other services actually use:
-  #   postgres.mindova.svc.cluster.local:5432
   clusterIP: None
   selector:
     app.kubernetes.io/name: postgres

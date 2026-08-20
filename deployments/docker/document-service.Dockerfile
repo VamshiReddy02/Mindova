@@ -63,6 +63,16 @@ COPY --from=builder /out/document-service /app/document-service
 
 EXPOSE 8080
 
-USER nonroot:nonroot
+# 65532:65532, not "nonroot:nonroot" — same user in practice (distroless
+# defines "nonroot" as UID/GID 65532 internally, a stable, publicly
+# documented value across all distroless image variants), but writing
+# the NAME here bakes the string "nonroot" into the image's config
+# metadata rather than the number. Kubernetes' runAsNonRoot admission
+# check reads that field literally and can't resolve a name to a UID
+# without running the container first — exactly the same class of
+# failure hit with ai-service.Dockerfile's USER app, just one layer
+# deeper since it's easy to assume a well-known distroless username is
+# "safe" here. It isn't; only a numeric UID in the image config is.
+USER 65532:65532
 
 ENTRYPOINT ["/app/document-service"]

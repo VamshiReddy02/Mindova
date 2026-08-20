@@ -32,9 +32,21 @@ FROM python:3.12-slim AS runtime
 # Copy the installed dependencies from the builder stage.
 COPY --from=builder /install /usr/local
 
-# Non-root user — python:3.12-slim is Debian-based, so the standard
-# Debian user tools work directly (no apk/apt needed for this).
-RUN addgroup --system app && adduser --system --ingroup app app
+# Non-root user with an EXPLICIT numeric UID/GID (1000), not just a
+# name. This matters specifically for Kubernetes: when a Pod sets
+# securityContext.runAsNonRoot: true, the kubelet needs to verify the
+# container's default user is non-root WITHOUT running it first — that
+# requires a numeric UID directly in the image's metadata. A named user
+# (USER app) can't be resolved that way (Kubernetes would have to read
+# /etc/passwd inside a running container to find out, which defeats the
+# whole point of a pre-execution safety check), and Kubernetes correctly
+# refuses to start the Pod rather than guess:
+#   "container has runAsNonRoot and image has non-numeric user (app),
+#    cannot verify user is non-root"
+# USER 1000 (numeric) sidesteps this entirely — same non-root user in
+# practice, just identified by a number Kubernetes can check directly.
+RUN addgroup --system --gid 1000 app \
+ && adduser --system --uid 1000 --ingroup app app
 
 WORKDIR /app
 
@@ -49,7 +61,7 @@ WORKDIR /app
 # history.
 COPY services/ai-service/app ./app
 
-USER app
+USER 1000
 
 EXPOSE 8001
 

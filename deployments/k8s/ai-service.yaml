@@ -19,30 +19,27 @@ spec:
         app.kubernetes.io/component: ai
         app.kubernetes.io/part-of: mindova
     spec:
+      securityContext:
+        runAsNonRoot: true
       containers:
         - name: ai-service
           image: mindova/ai-service:dev
-          # Explicit, not left to the distribution default: this is a
-          # locally-built image with no registry to pull from. Docker
-          # Desktop's kubeadm-based node shares the same image store as
-          # `docker build`, so IfNotPresent correctly finds it already
-          # there rather than attempting (and failing) a registry pull.
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8001
               name: http
           env:
-            # Non-sensitive config, inline for now — these move into
-            # configmap.yaml when that's the actual task, the same way
-            # Postgres's credentials are flagged to move into
-            # secret.yaml rather than being formalized prematurely here.
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
             - name: LLM_PROVIDER
               value: openrouter
             - name: OPENROUTER_MODEL
               value: openrouter/free
-            # The real secret — from the Secret created via the
-            # kubectl command in the file header comment, not from a
-            # plain value.
             - name: OPENROUTER_API_KEY
               valueFrom:
                 secretKeyRef:
