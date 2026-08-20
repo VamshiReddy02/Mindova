@@ -65,13 +65,8 @@ spec:
             timeoutSeconds: 3
             failureThreshold: 3
           resources:
-            # Modest defaults for a local single-node dev cluster —
-            # tune before this represents anything closer to production
-            # load. Python/FastAPI's baseline footprint is a bit higher
-            # than the Go services, hence slightly more memory headroom
-            # than postgres.yaml's limits.
             requests:
-              cpu: 250m
+              cpu: 200m
               memory: 256Mi
             limits:
               cpu: 500m
